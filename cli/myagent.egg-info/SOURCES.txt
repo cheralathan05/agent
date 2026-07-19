@@ -1,0 +1,12 @@
+pyproject.toml
+myagent/__init__.py
+myagent/main.py
+myagent.egg-info/PKG-INFO
+myagent.egg-info/SOURCES.txt
+myagent.egg-info/dependency_links.txt
+myagent.egg-info/entry_points.txt
+myagent.egg-info/requires.txt
+myagent.egg-info/top_level.txt
+myagent/client/__init__.py
+myagent/commands/__init__.py
+myagent/tui/__init__.py

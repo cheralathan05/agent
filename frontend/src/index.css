@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3b3b5c transparent;
+}
+
+body {
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-surface-200/80 backdrop-blur-sm border border-white/5 rounded-lg;
+  }
+
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm text-gray-400 
+           hover:text-white hover:bg-white/5 cursor-pointer transition-all duration-150;
+  }
+
+  .sidebar-item.active {
+    @apply text-accent-200 bg-accent-500/10 border-l-2 border-accent-200;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2 bg-accent-300 hover:bg-accent-200 text-white rounded-lg 
+           transition-all duration-150 font-medium text-sm disabled:opacity-50;
+  }
+
+  .btn-ghost {
+    @apply px-3 py-1.5 text-gray-400 hover:text-white hover:bg-white/5 
+           rounded-lg transition-all duration-150 text-sm;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 bg-surface-300 border border-white/10 rounded-lg 
+           text-white placeholder-gray-500 focus:outline-none focus:border-accent-300 
+           transition-colors duration-150 text-sm;
+  }
+}
+
+/* Terminal-style cursor blink */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.cursor-blink {
+  animation: blink 1s step-end infinite;
+}
