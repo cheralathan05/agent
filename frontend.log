@@ -3,3 +3,103 @@
 
   [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
   [32m➜[39m  [1mNetwork[22m: [36mhttp://10.175.208.87:[1m5173[22m/[39m
+[2m1:23:45 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:46 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:48 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:52 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:55 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/health[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:55 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:56 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/health[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:56 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:58 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/health[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:23:58 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:02 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:05 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:06 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:08 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:12 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:13 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/health[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:14 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/health[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:15 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:16 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/health[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:16 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:18 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:22 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:25 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:26 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)
+[2m1:24:29 am[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/v1/approvals?status=pending[39m
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1134:18)
+    at afterConnectMultiple (node:net:1715:7)

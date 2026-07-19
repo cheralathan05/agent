@@ -1,157 +1,83 @@
-"""MyAgent CLI - Terminal UI for the local autonomous AI coding agent."""
+"""MyAgent CLI - Premium Terminal UI for the local autonomous AI coding agent.
+
+Usage:
+    myagent              Start interactive TUI
+    myagent chat         Start interactive chat mode
+    myagent run <task>   Run a single task
+    myagent status       Check backend health
+    myagent doctor       Run diagnostics
+    myagent models       List available models
+"""
 
 import asyncio
-import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import typer
 from rich.console import Console
-from rich.layout import Layout
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
 from rich.status import Status
 from rich.table import Table
 from rich.text import Text
 
+from .client.api import MyAgentAPI
+from .tui import MyAgentTUI
+
+# Fix Windows console encoding for Unicode characters
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 app = typer.Typer(
     name="myagent",
-    help="MyAgent - Local Autonomous AI Coding Agent",
+    help="MyAgent - Local AI Software Engineering Agent",
     add_completion=False,
 )
 console = Console()
 
-# Default backend URL
 DEFAULT_BACKEND = "http://localhost:8000"
 
 
 def get_backend_url() -> str:
-    """Get the backend URL from config or default."""
-    import os
     return os.environ.get("MYAGENT_BACKEND_URL", DEFAULT_BACKEND)
 
 
-async def health_check(base_url: str) -> dict:
-    """Check backend health."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{base_url}/api/v1/health", timeout=10)
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        return {"status": "unavailable", "error": str(e)}
-
-
-async def stream_chat(base_url: str, messages: list[dict], model: str | None = None):
-    """Stream a chat response from the backend."""
-    async with httpx.AsyncClient() as client:
-        async with client.stream(
-            "POST",
-            f"{base_url}/api/v1/chat/stream",
-            json={"messages": messages, "model": model, "stream": True},
-            timeout=120,
-        ) as response:
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    try:
-                        data = json.loads(line[6:])
-                        yield data
-                    except json.JSONDecodeError:
-                        continue
-
-
-async def chat_request(base_url: str, messages: list[dict], model: str | None = None) -> str:
-    """Send a chat request and get the response."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{base_url}/api/v1/chat",
-                json={"messages": messages, "model": model, "stream": False},
-                timeout=60,
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result.get("content", "")
-    except httpx.ConnectError:
-        return "[ERROR] Backend not running. Start with: myagent start"
-    except Exception as e:
-        return f"[ERROR] {str(e)}"
-
-
-async def list_models(base_url: str) -> list[dict]:
-    """List available models."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{base_url}/api/v1/models", timeout=10)
-            response.raise_for_status()
-            return response.json().get("models", [])
-    except Exception:
-        return []
-
-
-def print_banner():
-    """Print the MyAgent banner."""
-    banner = """
-┌─[cyan]MyAgent[/cyan]────────────────────────────┐
-│ [bold]Local Autonomous AI Coding Agent[/bold]      │
-│ Powering Developer Productivity              │
-└──────────────────────────────────────────────┘
-"""
-    console.print(banner)
+# ── Commands ─────────────────────────────────────
 
 
 @app.callback(invoke_without_command=True)
 def main_callback(ctx: typer.Context):
-    """Default behavior when no subcommand is given."""
+    """Default: start the interactive TUI."""
     if ctx.invoked_subcommand is None:
-        asyncio.run(interactive_mode())
+        asyncio.run(interactive_tui())
 
 
 @app.command()
 def chat(
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="Ollama model to use"),
-    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use"),
 ):
-    """Start interactive chat mode."""
-    asyncio.run(interactive_mode(model=model, workspace=workspace))
+    """Start interactive TUI session."""
+    asyncio.run(interactive_tui(model=model))
 
 
 @app.command()
 def run(
     task: str = typer.Argument(..., help="Task description"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="Ollama model to use"),
-    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use"),
 ):
     """Run a single task and exit."""
-    asyncio.run(run_task(task, model=model, workspace=workspace))
-
-
-@app.command()
-def init(
-    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="Ollama model to use"),
-):
-    """Initialize MyAgent in the current or specified directory."""
-    target = Path(workspace or ".").resolve()
-    console.print(f"[green]✓[/green] Initialized MyAgent in: [bold]{target}[/bold]")
-    console.print(f"[green]✓[/green] Workspace ready")
-    if model:
-        console.print(f"[green]✓[/green] Model: {model}")
-
-
-@app.command()
-def models():
-    """List available Ollama models."""
-    asyncio.run(list_models_cmd())
+    asyncio.run(run_single_task(task, model=model))
 
 
 @app.command()
 def status():
-    """Check backend status and system health."""
+    """Check backend and system health."""
     asyncio.run(check_status())
 
 
@@ -162,356 +88,212 @@ def doctor():
 
 
 @app.command()
+def models():
+    """List available Ollama models."""
+    asyncio.run(list_models())
+
+
+@app.command()
+def init(
+    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Default model"),
+):
+    """Initialize MyAgent in a directory."""
+    target = Path(workspace or ".").resolve()
+    console.print(f"[green]✓[/green] Initialized MyAgent in: [bold]{target}[/bold]")
+    console.print(f"[green]✓[/green] Workspace ready")
+    if model:
+        console.print(f"[green]✓[/green] Model: {model}")
+
+
+@app.command()
 def config():
-    """View or edit configuration."""
-    console.print("[yellow]Configuration:[/yellow]")
-    console.print("  OLLAMA_BASE_URL=http://localhost:11434")
-    console.print("  OLLAMA_MODEL=qwen2.5-coder")
-    console.print("  BACKEND_URL=http://localhost:8000")
+    """View current configuration."""
+    console.print("[bold]Configuration:[/bold]")
+    console.print(f"  OLLAMA_BASE_URL = {os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')}")
+    console.print(f"  OLLAMA_MODEL    = {os.environ.get('OLLAMA_MODEL', 'qwen3:8b')}")
+    console.print(f"  BACKEND_URL     = {get_backend_url()}")
     console.print("\nSet via environment variables or .env file.")
 
 
 @app.command()
 def start():
-    """Start the backend server."""
+    """Show how to start the backend server."""
     console.print("[yellow]Starting MyAgent backend...[/yellow]")
-    console.print("[yellow]Note: Run from the project root directory.[/yellow]")
-    console.print(f"\nStart via Python directly:\n  [bold]cd backend && python -m backend.app.main[/bold]\n")
-    console.print("Or with uvicorn directly:\n  [bold]cd backend && uvicorn backend.app.main:app --reload[/bold]")
+    console.print("\n[bold]Option 1:[/bold] From project root:")
+    console.print("  [bold]python backend/run.py[/bold]")
+    console.print("\n[bold]Option 2:[/bold] With uvicorn:")
+    console.print("  [bold]cd backend && uvicorn app.main:app --reload --port 8000[/bold]")
 
 
-async def interactive_mode(model: str | None = None, workspace: str | None = None):
-    """Interactive chat mode with streaming responses."""
+# ── Interactive TUI ──────────────────────────────
+
+
+async def interactive_tui(model: str | None = None):
+    """Launch the full multi-panel TUI."""
     base_url = get_backend_url()
-    current_model = model
+    workspace = Path(".").resolve()
 
-    # Check health
-    health = await health_check(base_url)
+    # Check backend availability first
+    api = MyAgentAPI(base_url)
+    health = await api.health()
+
     if health.get("status") != "ok":
-        console.print("[red]✗[/red] Backend is not running.")
-        console.print(f"  Start it with: [bold]myagent start[/bold]")
+        console.print()
+        console.print(Panel(
+            Text.assemble(
+                ("\n✗ ", "bold red"),
+                ("Backend is not running\n\n", "bold"),
+                ("Start the backend server:\n", ""),
+                ("  python backend/run.py\n\n", "bold yellow"),
+                ("Or check if the backend process is alive.\n", "dim"),
+            ),
+            title="[bold red]CONNECTION ERROR[/bold red]",
+            border_style="red",
+        ))
         return
 
     # Get model info
-    if not current_model:
-        current_model = health.get("config", {}).get("model", "qwen2.5-coder")
-        console.print(f"  Model: {current_model}")
-
-    ws_dir = Path(workspace or ".").resolve()
-    messages: list[dict] = []
-
-    # Print header
-    console.clear()
-    print_banner()
-    console.print(f"[dim]Model:[/dim] [bold]{current_model}[/bold]    "
-                  f"[dim]Workspace:[/dim] [bold]{ws_dir}[/bold]")
-    console.print(f"[dim]Status:[/dim] [green]Ready[/green]")
-    console.print("─" * 50)
-
-    # Main interaction loop
-    while True:
-        try:
-            user_input = Prompt.ask("\n[bold cyan]>[/bold cyan]")
-
-            if not user_input.strip():
-                continue
-
-            # Handle slash commands
-            if user_input.startswith("/"):
-                await handle_slash_command(user_input, base_url, ws_dir)
-                continue
-
-            if user_input.lower() in ("exit", "quit"):
-                break
-
-            # Add user message
-            messages.append({"role": "user", "content": user_input})
-
-            # Stream the response
-            console.print()
-            full_response = ""
-            async for data in stream_chat(base_url, messages):
-                event_type = data.get("event")
-                if event_type == "token":
-                    chunk = data.get("data", {}).get("content", "")
-                    full_response += chunk
-                    console.print(chunk, end="")
-                elif event_type == "complete":
-                    content = data.get("data", {}).get("content", "")
-                    if content:
-                        full_response = content
-                elif event_type == "error":
-                    console.print(f"\n[red]Error: {data.get('data', {}).get('content', '')}[/red]")
-
-            if full_response:
-                messages.append({"role": "assistant", "content": full_response})
-
-            console.print()
-
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Interrupted.[/yellow]")
-            break
-        except Exception as e:
-            console.print(f"\n[red]Error: {str(e)}[/red]")
-            break
-
-
-async def handle_slash_command(cmd: str, base_url: str, ws_dir: Path):
-    """Handle slash commands (async version)."""
-    parts = cmd.split()
-    command = parts[0].lower()
-
-    if command in ("/help", "/h"):
-        console.print("""
-[bold]Commands:[/bold]
-  /help, /h       Show this help
-  /model <name>   Switch model
-  /models         List available models
-  /project        Show project info
-  /status         Show agent status
-  /clear          Clear screen
-  /stop           Cancel current operation
-  /approvals      List pending approvals
-  /allow <id>     Approve a pending approval
-  /deny <id>      Deny a pending approval
-  /permissions    Show saved permissions
-  /exit, /quit    Exit MyAgent
-        """)
-
-    elif command == "/clear":
-        console.clear()
-        print_banner()
-
-    elif command == "/model" and len(parts) > 1:
-        console.print(f"[green]✓[/green] Switched to model: {parts[1]}")
-
-    elif command == "/models":
-        models_data = await list_models(base_url)
-        if models_data:
-            table = Table(title="Available Models")
-            table.add_column("Name")
-            table.add_column("Size", justify="right")
-            table.add_column("Modified")
-            for m in models_data:
-                table.add_row(
-                    m.get("name", ""),
-                    str(m.get("size", "")),
-                    str(m.get("modified_at", "")),
-                )
-            console.print(table)
-        else:
-            console.print("[yellow]No models found or Ollama unavailable[/yellow]")
-
-    elif command in ("/approvals", "/pending"):
-        await list_pending_approvals(base_url)
-
-    elif command == "/allow" and len(parts) >= 2:
-        approval_id = parts[1]
-        perm_type = parts[2] if len(parts) >= 3 else "once"
-        await approve_action(base_url, approval_id, perm_type)
-
-    elif command == "/deny" and len(parts) >= 2:
-        await deny_action(base_url, parts[1])
-
-    elif command == "/permissions":
-        console.print("[yellow]Saved permissions:[/yellow]")
-        console.print("  Check the web UI or backend logs for saved permissions.")
-
-    elif command == "/exit" or command == "/quit":
-        console.print("[yellow]Goodbye![/yellow]")
-        raise SystemExit(0)
-
-    elif command == "/project":
-        console.print(f"  [dim]Workspace:[/dim] [bold]{ws_dir}[/bold]")
-        console.print(f"  [dim]Git:[/dim] [bold]detecting...[/bold]")
-        console.print(f"  [dim]Language:[/dim] [bold]detecting...[/bold]")
-
+    if model:
+        current_model = model
     else:
-        console.print(f"[red]Unknown command: {command}. Type /help for available commands.[/red]")
+        config_model = health.get("config", {}).get("model")
+        current_model = config_model or os.environ.get("OLLAMA_MODEL", "qwen3:8b")
+
+    await api.close()
+
+    # Launch TUI
+    tui = MyAgentTUI(
+        api_base_url=base_url,
+        workspace=workspace,
+        model=current_model,
+    )
+    await tui.run()
 
 
-async def list_pending_approvals(base_url: str):
-    """List pending approvals from the backend."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{base_url}/api/v1/approvals",
-                params={"status": "pending"},
-                timeout=10,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                approvals = data.get("approvals", [])
-                if not approvals:
-                    console.print("[yellow]No pending approvals.[/yellow]")
-                    return
-                
-                table = Table(title=f"Pending Approvals ({data['count']})")
-                table.add_column("ID", style="dim")
-                table.add_column("Tool")
-                table.add_column("Action")
-                table.add_column("Risk")
-                table.add_column("Created")
-                
-                for a in approvals[:10]:
-                    short_id = a["id"][:8] + "..."
-                    table.add_row(
-                        short_id,
-                        a["tool_name"],
-                        a["action"][:40],
-                        f"[{'red' if a['risk'] == 'high' else 'yellow' if a['risk'] == 'medium' else 'green'}]{a['risk']}[/]",
-                        (a["created_at"] or "")[:19],
-                    )
-                console.print(table)
-                console.print("[dim]Use /allow <id> [once|session|always] or /deny <id>[/dim]")
-            else:
-                console.print(f"[red]Error fetching approvals: {response.status_code}[/red]")
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
+# ── Single task mode ─────────────────────────────
 
 
-async def approve_action(base_url: str, approval_id: str, perm_type: str = "once"):
-    """Approve a pending approval."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{base_url}/api/v1/approvals/{approval_id}/approve",
-                json={"permission_type": perm_type},
-                timeout=10,
-            )
-            if response.status_code == 200:
-                console.print(f"[green]✓[/green] Approved: {approval_id[:8]}... ({perm_type})")
-            else:
-                error = response.json().get("detail", "Unknown error")
-                console.print(f"[red]✗[/red] {error}")
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-
-
-async def deny_action(base_url: str, approval_id: str):
-    """Deny a pending approval."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{base_url}/api/v1/approvals/{approval_id}/deny",
-                timeout=10,
-            )
-            if response.status_code == 200:
-                console.print(f"[red]✗[/red] Denied: {approval_id[:8]}...")
-            else:
-                error = response.json().get("detail", "Unknown error")
-                console.print(f"[red]✗[/red] {error}")
-    except Exception as e:
-        console.print(f"[red]Error: {str(e)}[/red]")
-
-
-async def run_task(task: str, model: str | None = None, workspace: str | None = None):
-    """Execute a single task."""
+async def run_single_task(task: str, model: str | None = None):
+    """Execute a single task with streaming output."""
     base_url = get_backend_url()
+    api = MyAgentAPI(base_url)
     messages = [{"role": "user", "content": task}]
 
-    console.print(f"[bold]Task:[/bold] {task}")
+    # Check health
+    health = await api.health()
+    if health.get("status") != "ok":
+        console.print("[red]✗ Backend is not running. Start with: python backend/run.py[/red]")
+        return
+
+    header = Panel(
+        Text.assemble(
+            (" ◆ MYAGENT ", "bold cyan"),
+            ("\n  Run Task", "dim"),
+        ),
+        border_style="cyan",
+    )
+    console.print(header)
+    console.print(f"\n[bold]Task:[/bold] {task}")
     console.print("─" * 50)
 
-    with Status("Working...") as status:
-        async for data in stream_chat(base_url, messages, model=model):
-            event_type = data.get("event")
-            if event_type == "token":
+    with Status("Working...", spinner="dots"):
+        full_response = ""
+        async for data in api.stream_chat(messages, model):
+            event = data.get("event")
+            if event == "token":
                 chunk = data.get("data", {}).get("content", "")
+                full_response += chunk
                 console.print(chunk, end="")
-                status.update("")
-            elif event_type == "complete":
+            elif event == "complete":
+                if full_response:
+                    messages.append({"role": "assistant", "content": full_response})
                 console.print()
-            elif event_type == "error":
+            elif event == "error":
                 console.print(f"\n[red]Error: {data.get('data', {}).get('content', '')}[/red]")
 
-    console.print()
+        console.print()
+    await api.close()
 
 
-async def list_models_cmd():
-    """List available models."""
-    base_url = get_backend_url()
-
-    with Status("Fetching models..."):
-        models_data = await list_models(base_url)
-
-    if models_data:
-        table = Table(title="Available Models")
-        table.add_column("Name", style="cyan")
-        table.add_column("Size", justify="right")
-        table.add_column("Modified")
-
-        for m in models_data[:10]:
-            table.add_row(
-                m.get("name", ""),
-                str(m.get("size", "")),
-                str(m.get("modified_at", "")),
-            )
-
-        console.print(table)
-    else:
-        console.print("[yellow]No models found.[/yellow]")
-        console.print("Make sure Ollama is running: [bold]ollama serve[/bold]")
+# ── Status Check ─────────────────────────────────
 
 
 async def check_status():
-    """Check system status."""
+    """Check backend and system health."""
     base_url = get_backend_url()
-    health = await health_check(base_url)
+    api = MyAgentAPI(base_url)
 
+    health = await api.health()
     if health.get("status") == "ok":
-        console.print("[green]✓ Backend: Running[/green]")
+        console.print("[green]● Backend: Running[/green]")
         llm = health.get("llm", {})
-        console.print(f"  [dim]Provider:[/dim] {llm.get('status', 'unknown')}")
-        console.print(f"  [dim]Model:[/dim] {health.get('config', {}).get('model', 'N/A')}")
-        console.print(f"  [dim]Database:[/dim] {health.get('config', {}).get('database', 'N/A')}")
+        console.print(f"  Ollama: {llm.get('status', 'unknown')}")
+        console.print(f"  Model:  {health.get('config', {}).get('model', 'N/A')}")
 
         if llm.get("models"):
-            console.print(f"  [dim]Available models:[/dim] {', '.join(llm['models'][:5])}")
+            console.print(f"  Models: {', '.join(llm['models'][:5])}")
     else:
         console.print("[red]✗ Backend: Not running[/red]")
-        console.print(f"  Start: [bold]myagent start[/bold]")
+        console.print("  Start: python backend/run.py")
+
+    await api.close()
+
+
+# ── Diagnostics ──────────────────────────────────
 
 
 async def run_doctor():
-    """Run comprehensive diagnostics."""
-    console.print("[bold]MyAgent Doctor[/bold]")
+    """Run system diagnostics."""
+    console.print(Panel(
+        Text.assemble(
+            (" ◆ MYAGENT ", "bold cyan"),
+            ("Doctor", "dim"),
+        ),
+        border_style="cyan",
+    ))
     console.print("─" * 40)
 
-    # Check Python
-    import sys
-    py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    console.print(f"[green]✓[/green] Python {py_version}")
+    # Python version
+    console.print(f"[green]✓[/green] Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
-    # Check Backend
+    # Backend
     base_url = get_backend_url()
-    health = await health_check(base_url)
+    api = MyAgentAPI(base_url)
+    health = await api.health()
     if health.get("status") == "ok":
         console.print("[green]✓[/green] Backend: Running")
     else:
         console.print("[red]✗[/red] Backend: Not running")
 
-    # Check Ollama
+    # Ollama
     try:
+        import httpx
         async with httpx.AsyncClient() as client:
-            response = await client.get("http://localhost:11434/api/tags", timeout=5)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                console.print(f"[green]✓[/green] Ollama: Running ({len(models)} models)")
+            resp = await client.get("http://localhost:11434/api/tags", timeout=5)
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                console.print(f"[green]✓[/green] Ollama: Running ({len(models)} model(s))")
+                for m in models[:3]:
+                    name = m.get("name", "?")
+                    size = m.get("size", 0)
+                    console.print(f"       {name} ({size / 1e9:.1f} GB)")
             else:
                 console.print("[yellow]⚠[/yellow] Ollama: Unexpected response")
     except Exception:
         console.print("[red]✗[/red] Ollama: Not running")
 
-    # Check workspace
+    # Workspace
     ws = Path(".").resolve()
-    if ws.exists():
-        console.print(f"[green]✓[/green] Workspace: {ws}")
+    console.print(f"[green]✓[/green] Workspace: {ws}")
 
-    # Check Git
+    # Git
     try:
         import subprocess
-        result = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
         if result.returncode == 0:
             console.print("[green]✓[/green] Git: Repository detected")
         else:
@@ -520,7 +302,41 @@ async def run_doctor():
         console.print("[yellow]⚠[/yellow] Git: Not available")
 
     console.print("─" * 40)
-    console.print("[dim]For help: myagent --help[/dim]")
+    await api.close()
+
+
+# ── List Models ──────────────────────────────────
+
+
+async def list_models():
+    """List available Ollama models in a table."""
+    base_url = get_backend_url()
+    api = MyAgentAPI(base_url)
+    models_data = await api.list_models()
+
+    if models_data:
+        table = Table(title="Available Models", border_style="cyan")
+        table.add_column("Name", style="cyan")
+        table.add_column("Size", justify="right")
+        table.add_column("Family")
+        table.add_column("Parameters")
+
+        for m in models_data:
+            details = m.get("details", {})
+            size = m.get("size", 0)
+            size_gb = size / 1e9 if size else 0
+            table.add_row(
+                m.get("name", ""),
+                f"{size_gb:.1f} GB" if size_gb > 0 else "?",
+                details.get("family", ""),
+                details.get("parameter_size", ""),
+            )
+        console.print(table)
+    else:
+        console.print("[yellow]No models found. Is Ollama running?[/yellow]")
+        console.print("  Run: [bold]ollama serve[/bold]")
+
+    await api.close()
 
 
 def main():

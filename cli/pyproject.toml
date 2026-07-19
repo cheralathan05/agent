@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "myagent"
 version = "1.0.0"
-description = "Local Autonomous AI Coding Agent"
+description = "MyAgent - Local AI Software Engineering Agent"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}

@@ -1,5 +1,7 @@
 """FastAPI application entry point."""
 
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,10 +29,23 @@ from backend.app.database.session import init_db
 from backend.app.llm.router import close_providers
 from backend.app.tools.registry import init_tools
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown."""
+    # Startup
+    init_db()
+    init_tools()
+    yield
+    # Shutdown
+    await close_providers()
+
+
 app = FastAPI(
     title="MyAgent API",
     description="Local Autonomous AI Coding Agent Platform",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS
@@ -59,19 +74,6 @@ app.include_router(runs.router)
 app.include_router(checkpoints.router)
 app.include_router(intelligence.router)
 app.include_router(websocket_router)
-
-
-@app.on_event("startup")
-async def startup():
-    """Initialize application on startup."""
-    init_db()
-    init_tools()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Cleanup on shutdown."""
-    await close_providers()
 
 
 @app.get("/")
