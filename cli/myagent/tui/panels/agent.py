@@ -80,8 +80,8 @@ class AgentPanel:
         self.streaming_content = ""
         self.current_model = "qwen3:8b"
         self.input_text = ""
-        self.show_composer = True
-        self._terminal_width = 80  # Will be updated by app
+        self._terminal_width = 80   # Updated by app on resize
+        self._terminal_height = 24  # Updated by app on resize
         # Spinner state
         self._spinner_frame = 0
 
@@ -250,8 +250,30 @@ class AgentPanel:
         )
 
     def render_composer(self) -> Group:
-        """Render the input composer area at the bottom of the agent panel."""
-        # Calculate dynamic box width based on terminal width
+        """Render the input composer area as a standalone renderable.
+        
+        Returns a Group that is rendered in the fixed layout['input'] row.
+        Adjusts to a compact 2-line version on short terminals.
+        """
+        is_compact = self._terminal_height < 15
+
+        if is_compact:
+            # Compact 2-line composer for short terminals
+            prompt = self.input_text if self.input_text else "Ask MyAgent..."
+            return Group(
+                Text.assemble(
+                    ("  ", ""),
+                    ("▸ ", "bold cyan"),
+                    (prompt, "dim italic" if not self.input_text else "white"),
+                ),
+                Text.assemble(
+                    ("   ", ""),
+                    (f"[{self.get_mode_display()}]", "dim"),
+                    (f"  {self.current_model}", "dim"),
+                ),
+            )
+
+        # Full-size composer (4 lines)
         box_width = max(30, min(72, self._terminal_width - 8))
         prompt_max = box_width - 4
 

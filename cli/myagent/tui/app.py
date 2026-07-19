@@ -70,6 +70,12 @@ class MyAgentTUI:
         except Exception:
             return 120
 
+    def _get_terminal_height(self) -> int:
+        try:
+            return os.get_terminal_size().lines
+        except Exception:
+            return 24
+
     def _build_layout(self) -> Layout:
         """Build the multi-panel layout with responsive visibility.
         
@@ -87,14 +93,19 @@ class MyAgentTUI:
         layout.split_column(
             Layout(name="header", size=1),
             Layout(name="main", ratio=1),
-            Layout(name="input", size=4),
+            Layout(name="input", size=input_size),
             Layout(name="status", size=1),
         )
 
-        # Pass terminal width to agent panel for dynamic composer width
+        # Pass terminal dimensions to agent panel
         width = self._get_terminal_width()
+        height = self._get_terminal_height()
         self._terminal_width = width
         self.agent._terminal_width = width
+
+        # Determine input area size based on terminal height
+        # On short terminals, reduce input to 2 lines (compact mode)
+        input_size = 2 if height < 15 else 4
 
         # Main area split - hide sidebar BEFORE clipping input or status
         if width < 80:
@@ -248,8 +259,9 @@ class MyAgentTUI:
         self.status.mode = self.agent.mode
         self.status.agent_state = self.agent.agent_state
         self.status.context_pct = self.context.context_percent()
-        # Pass terminal width for dynamic composer sizing
+        # Pass terminal dimensions for dynamic composer sizing
         self.agent._terminal_width = self._get_terminal_width()
+        self.agent._terminal_height = self._get_terminal_height()
         self._update_git_state()
 
     def _refresh_display(self):
@@ -360,12 +372,16 @@ class MyAgentTUI:
                 self.status.model = result.model_change
 
             self.context.commands_run += 1
+            # Clear input area
+            self.agent.input_text = ""
         else:
             # Regular chat message - stream from backend
             self.messages.append({"role": "user", "content": text})
             self.agent.add_message("user", text)
             self.agent.agent_state = "thinking"
             self.agent.streaming_content = ""
+            # Clear the input placeholder
+            self.agent.input_text = ""
 
             self._refresh_display()
 
