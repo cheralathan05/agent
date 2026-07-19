@@ -4,6 +4,7 @@ import { ChatWorkspace } from './features/chat/ChatWorkspace'
 import { ModelManager } from './features/models/ModelManager'
 import { Settings } from './features/settings/Settings'
 import { StatusBar } from './components/StatusBar'
+import { ApprovalPanel } from './features/approvals/ApprovalPanel'
 import { useStore } from './stores/appStore'
 
 type View = 'chat' | 'models' | 'settings'
@@ -24,6 +25,7 @@ export default function App() {
         </main>
       </div>
       
+      <ApprovalPanel />
       <StatusBar />
     </div>
   )

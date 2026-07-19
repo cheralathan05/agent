@@ -143,15 +143,66 @@ class AgentLoop:
 
                     observation = result.get("output", "") or result.get("error", "No output")
 
-                    # Handle approval requirements
+                    # Handle approval requirements — poll until resolved
                     if result.get("requires_approval"):
                         approval_id = result.get("approval_id")
+                        from backend.app.security.permissions import permission_engine
+
+                        await orchestrator.update_run(
+                            run_id,
+                            {
+                                "status": "waiting_for_approval",
+                                "current_step": state.step_number,
+                                "approval_id": approval_id,
+                            },
+                        )
+
                         context.add_section(
                             "Pending Approval",
-                            f"Tool '{tool_name}' requires approval (id={approval_id}): {result.get('error', '')}",
+                            f"Tool '{tool_name}' requires approval to {result.get('error', 'proceed')} (id={approval_id})\n"
+                            f"Use /allow {approval_id} or /deny {approval_id} in the CLI, "
+                            f"or use the web UI to respond.",
                             priority=1,
                         )
-                        # Wait for approval (in real impl, this would block)
+
+                        # Poll for approval resolution
+                        max_polls = 300  # 5 minutes at 1s intervals
+                        for _ in range(max_polls):
+                            await asyncio.sleep(1)
+                            resolution = await permission_engine.resolve_approval(approval_id)
+                            if resolution["status"] == "approved":
+                                # Grant permission and retry
+                                await permission_engine.grant_permission(
+                                    tool_name, resolution.get("permission_type", "once")
+                                )
+                                start = time.time()
+                                result = await registry.execute(tool_name, **tool_args)
+                                duration = int((time.time() - start) * 1000)
+                                observation = result.get("output", "") or result.get("error", "No output")
+                                context.add_section(
+                                    "Tool Result",
+                                    f"Tool: {tool_name}\nDuration: {duration}ms\nSuccess: {result.get('success', False)}\n\n{observation[:2000]}",
+                                    priority=3,
+                                )
+                                state.tool_failures += (0 if result.get("success", False) else 1)
+                                await orchestrator.update_run(run_id, {"status": "running"})
+                                break
+                            elif resolution["status"] == "denied":
+                                context.add_section(
+                                    "Observation",
+                                    f"Tool '{tool_name}' was denied by user. Skipping.",
+                                    priority=3,
+                                )
+                                await orchestrator.update_run(run_id, {"status": "running"})
+                                break
+                        else:
+                            # Approval timed out
+                            context.add_section(
+                                "Observation",
+                                f"Tool '{tool_name}' approval timed out after 5 minutes. Skipping.",
+                                priority=3,
+                            )
+                        # Continue to next iteration after handling approval
                         continue
 
                     context.add_section(

@@ -271,6 +271,10 @@ async def handle_slash_command(cmd: str, base_url: str, ws_dir: Path):
   /status         Show agent status
   /clear          Clear screen
   /stop           Cancel current operation
+  /approvals      List pending approvals
+  /allow <id>     Approve a pending approval
+  /deny <id>      Deny a pending approval
+  /permissions    Show saved permissions
   /exit, /quit    Exit MyAgent
         """)
 
@@ -298,6 +302,21 @@ async def handle_slash_command(cmd: str, base_url: str, ws_dir: Path):
         else:
             console.print("[yellow]No models found or Ollama unavailable[/yellow]")
 
+    elif command in ("/approvals", "/pending"):
+        await list_pending_approvals(base_url)
+
+    elif command == "/allow" and len(parts) >= 2:
+        approval_id = parts[1]
+        perm_type = parts[2] if len(parts) >= 3 else "once"
+        await approve_action(base_url, approval_id, perm_type)
+
+    elif command == "/deny" and len(parts) >= 2:
+        await deny_action(base_url, parts[1])
+
+    elif command == "/permissions":
+        console.print("[yellow]Saved permissions:[/yellow]")
+        console.print("  Check the web UI or backend logs for saved permissions.")
+
     elif command == "/exit" or command == "/quit":
         console.print("[yellow]Goodbye![/yellow]")
         raise SystemExit(0)
@@ -308,7 +327,82 @@ async def handle_slash_command(cmd: str, base_url: str, ws_dir: Path):
         console.print(f"  [dim]Language:[/dim] [bold]detecting...[/bold]")
 
     else:
-        console.print(f"[red]Unknown command: {command}[/red]")
+        console.print(f"[red]Unknown command: {command}. Type /help for available commands.[/red]")
+
+
+async def list_pending_approvals(base_url: str):
+    """List pending approvals from the backend."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{base_url}/api/v1/approvals",
+                params={"status": "pending"},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                approvals = data.get("approvals", [])
+                if not approvals:
+                    console.print("[yellow]No pending approvals.[/yellow]")
+                    return
+                
+                table = Table(title=f"Pending Approvals ({data['count']})")
+                table.add_column("ID", style="dim")
+                table.add_column("Tool")
+                table.add_column("Action")
+                table.add_column("Risk")
+                table.add_column("Created")
+                
+                for a in approvals[:10]:
+                    short_id = a["id"][:8] + "..."
+                    table.add_row(
+                        short_id,
+                        a["tool_name"],
+                        a["action"][:40],
+                        f"[{'red' if a['risk'] == 'high' else 'yellow' if a['risk'] == 'medium' else 'green'}]{a['risk']}[/]",
+                        (a["created_at"] or "")[:19],
+                    )
+                console.print(table)
+                console.print("[dim]Use /allow <id> [once|session|always] or /deny <id>[/dim]")
+            else:
+                console.print(f"[red]Error fetching approvals: {response.status_code}[/red]")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+
+
+async def approve_action(base_url: str, approval_id: str, perm_type: str = "once"):
+    """Approve a pending approval."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{base_url}/api/v1/approvals/{approval_id}/approve",
+                json={"permission_type": perm_type},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                console.print(f"[green]✓[/green] Approved: {approval_id[:8]}... ({perm_type})")
+            else:
+                error = response.json().get("detail", "Unknown error")
+                console.print(f"[red]✗[/red] {error}")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
+
+
+async def deny_action(base_url: str, approval_id: str):
+    """Deny a pending approval."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{base_url}/api/v1/approvals/{approval_id}/deny",
+                timeout=10,
+            )
+            if response.status_code == 200:
+                console.print(f"[red]✗[/red] Denied: {approval_id[:8]}...")
+            else:
+                error = response.json().get("detail", "Unknown error")
+                console.print(f"[red]✗[/red] {error}")
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}[/red]")
 
 
 async def run_task(task: str, model: str | None = None, workspace: str | None = None):

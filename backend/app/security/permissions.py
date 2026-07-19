@@ -81,6 +81,26 @@ class PermissionEngine:
 
         return {"permitted": True}
 
+    async def resolve_approval(self, approval_id: str) -> dict[str, Any]:
+        """Check the status of an approval. Used by the agent loop to poll.
+        
+        Returns:
+            Dict with 'status' (pending/approved/denied) and 'permission_type'.
+        """
+        db = SessionLocal()
+        try:
+            approval = db.query(Approval).filter(Approval.id == approval_id).first()
+            if not approval:
+                return {"status": "error", "error": "Approval not found"}
+            
+            return {
+                "status": approval.status,
+                "permission_type": approval.permission_type or "once",
+                "tool_name": approval.tool_name,
+            }
+        finally:
+            db.close()
+
     async def grant_permission(
         self,
         tool_name: str,
