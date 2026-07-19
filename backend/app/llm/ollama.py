@@ -66,6 +66,7 @@ class OllamaProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
             "stream": False,
+            "keep_alive": "30m",
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
@@ -123,6 +124,7 @@ class OllamaProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
             "stream": True,
+            "keep_alive": "30m",
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
@@ -160,7 +162,17 @@ class OllamaProvider(LLMProvider):
             response.raise_for_status()
             models = response.json().get("models", [])
             model_names = [m.get("name") for m in models]
-            default_available = settings.ollama_model in model_names
+            model_base_names = [n.split(":")[0] for n in model_names]
+            default_available = (
+                settings.ollama_model in model_names or
+                settings.ollama_model in model_base_names
+            )
+            if not default_available:
+                import logging
+                logging.warning(
+                    f"OLLAMA_FIX_CHECK: model={settings.ollama_model}, "
+                    f"names={model_names}, base_names={model_base_names}"
+                )
             return {
                 "status": "ok",
                 "message": f"Ollama connected. {len(models)} model(s) available.",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from backend.app.agent.context import ContextBuilder
 from backend.app.agent.orchestrator import orchestrator
 from backend.app.agent.state import AgentState
+from backend.app.api.websocket import manager as ws_manager
 from backend.app.config import settings
 from backend.app.llm.ollama import OllamaProvider
 from backend.app.schemas.agent import AgentDecision
@@ -39,6 +41,14 @@ Available actions:
 - error: Report an error
 
 Always choose the most appropriate action based on the current state."""
+
+
+async def _broadcast(run_id: str, event: str, data: dict[str, Any]):
+    """Broadcast an event to all clients watching a run."""
+    try:
+        await ws_manager.broadcast_to_run(run_id, event, data)
+    except Exception:
+        pass  # WebSocket broadcasting is best-effort
 
 
 class AgentLoop:
@@ -75,16 +85,29 @@ class AgentLoop:
         )
 
         await orchestrator.update_run(run_id, {"status": "running"})
+        await _broadcast(run_id, "run.started", {
+            "run_id": run_id,
+            "goal": goal, "model": model or settings.ollama_model,
+            "tools_available": len(registry),
+        })
 
         try:
             while state.should_continue():
                 if not state.increment_step():
+                    await _broadcast(run_id, "run.limit_reached", {
+                        "step": state.step_number, "max_steps": state.max_steps,
+                    })
                     break
 
                 # Redact secrets from context before sending to LLM
                 safe_context = context.build()
                 if secret_detector.contains_secrets(safe_context):
                     safe_context = secret_detector.redact(safe_context)
+
+                await _broadcast(run_id, "model.thinking", {
+                    "step": state.step_number,
+                    "thought_summary": f"Step {state.step_number} of goal: {goal[:60]}...",
+                })
 
                 messages = [
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -110,6 +133,10 @@ class AgentLoop:
                             "current_step": state.step_number,
                         },
                     )
+                    await _broadcast(run_id, "run.completed", {
+                        "result": decision.thought_summary,
+                        "steps": state.step_number,
+                    })
                     return run_id
 
                 elif decision.action == "plan":
@@ -119,6 +146,10 @@ class AgentLoop:
                         json.dumps(state.plan, indent=2),
                         priority=2,
                     )
+                    await _broadcast(run_id, "plan.created", {
+                        "tasks": state.plan,
+                        "step": state.step_number,
+                    })
 
                 elif decision.action == "tool_call":
                     tool_name = decision.arguments.get("tool_name", "")
@@ -126,16 +157,19 @@ class AgentLoop:
 
                     if not tool_name:
                         context.add_section(
-                            "Observation",
-                            "No tool_name specified in tool_call",
-                            priority=3,
+                            "Observation", "No tool_name specified", priority=3,
                         )
                         continue
 
-                    # Pass run_id and workspace through to permission check
                     tool_args["run_id"] = run_id
                     if workspace:
                         tool_args["workspace"] = workspace
+
+                    await _broadcast(run_id, "tool.started", {
+                        "tool": tool_name,
+                        "arguments": tool_args,
+                        "step": state.step_number,
+                    })
 
                     start = time.time()
                     result = await registry.execute(tool_name, **tool_args)
@@ -157,24 +191,32 @@ class AgentLoop:
                             },
                         )
 
+                        await _broadcast(run_id, "approval.required", {
+                            "approval_id": approval_id,
+                            "tool": tool_name,
+                            "reason": result.get("error", "Tool execution requires approval"),
+                            "risk": decision.risk,
+                        })
+
                         context.add_section(
                             "Pending Approval",
                             f"Tool '{tool_name}' requires approval to {result.get('error', 'proceed')} (id={approval_id})\n"
-                            f"Use /allow {approval_id} or /deny {approval_id} in the CLI, "
-                            f"or use the web UI to respond.",
+                            f"Use /allow {approval_id} or /deny {approval_id} in the CLI.",
                             priority=1,
                         )
 
                         # Poll for approval resolution
-                        max_polls = 300  # 5 minutes at 1s intervals
+                        max_polls = 300
                         for _ in range(max_polls):
                             await asyncio.sleep(1)
                             resolution = await permission_engine.resolve_approval(approval_id)
                             if resolution["status"] == "approved":
-                                # Grant permission and retry
                                 await permission_engine.grant_permission(
                                     tool_name, resolution.get("permission_type", "once")
                                 )
+                                await _broadcast(run_id, "approval.resolved", {
+                                    "approval_id": approval_id, "status": "approved",
+                                })
                                 start = time.time()
                                 result = await registry.execute(tool_name, **tool_args)
                                 duration = int((time.time() - start) * 1000)
@@ -188,89 +230,91 @@ class AgentLoop:
                                 await orchestrator.update_run(run_id, {"status": "running"})
                                 break
                             elif resolution["status"] == "denied":
+                                await _broadcast(run_id, "approval.resolved", {
+                                    "approval_id": approval_id, "status": "denied",
+                                })
                                 context.add_section(
                                     "Observation",
-                                    f"Tool '{tool_name}' was denied by user. Skipping.",
+                                    f"Tool '{tool_name}' was denied. Skipping.",
                                     priority=3,
                                 )
                                 await orchestrator.update_run(run_id, {"status": "running"})
                                 break
                         else:
-                            # Approval timed out
                             context.add_section(
                                 "Observation",
-                                f"Tool '{tool_name}' approval timed out after 5 minutes. Skipping.",
+                                f"Tool '{tool_name}' approval timed out. Skipping.",
                                 priority=3,
                             )
-                        # Continue to next iteration after handling approval
                         continue
+
+                    # Tool completed (no approval needed or already resolved)
+                    success = result.get("success", False)
+                    await _broadcast(run_id, "tool.completed", {
+                        "tool": tool_name,
+                        "success": success,
+                        "duration_ms": duration,
+                        "output_preview": observation[:200],
+                    })
+
+                    if not success:
+                        await _broadcast(run_id, "tool.failed", {
+                            "tool": tool_name,
+                            "error": result.get("error", ""),
+                            "duration_ms": duration,
+                        })
 
                     context.add_section(
                         "Tool Result",
-                        f"Tool: {tool_name}\nDuration: {duration}ms\nSuccess: {result.get('success', False)}\n\n{observation[:2000]}",
+                        f"Tool: {tool_name}\nDuration: {duration}ms\nSuccess: {success}\n\n{observation[:2000]}",
                         priority=3,
                     )
-
-                    state.tool_failures += (0 if result.get("success", False) else 1)
+                    state.tool_failures += (0 if success else 1)
 
                 elif decision.action == "ask_user":
-                    await orchestrator.update_run(
-                        run_id,
-                        {
-                            "status": "waiting",
-                            "current_step": state.step_number,
-                        },
-                    )
+                    await orchestrator.update_run(run_id, {
+                        "status": "waiting", "current_step": state.step_number,
+                    })
+                    await _broadcast(run_id, "agent.asking_user", {
+                        "question": decision.thought_summary,
+                    })
                     context.add_section(
-                        "User Question",
-                        decision.thought_summary,
-                        priority=1,
+                        "User Question", decision.thought_summary, priority=1,
                     )
 
                 elif decision.action == "replan":
                     context.clear()
                     context.add_section("Goal", goal, priority=1)
+                    await _broadcast(run_id, "plan.replanned", {
+                        "reason": decision.thought_summary,
+                    })
 
                 elif decision.action == "error":
-                    await orchestrator.update_run(
-                        run_id,
-                        {
-                            "status": "failed",
-                            "error": decision.thought_summary,
-                            "current_step": state.step_number,
-                        },
-                    )
+                    await orchestrator.update_run(run_id, {
+                        "status": "failed", "error": decision.thought_summary,
+                        "current_step": state.step_number,
+                    })
+                    await _broadcast(run_id, "run.failed", {
+                        "error": decision.thought_summary,
+                        "step": state.step_number,
+                    })
                     return run_id
 
         except Exception as e:
-            await orchestrator.update_run(
-                run_id,
-                {"status": "failed", "error": str(e)},
-            )
+            await orchestrator.update_run(run_id, {"status": "failed", "error": str(e)})
+            await _broadcast(run_id, "run.failed", {"error": str(e)})
 
         return run_id
 
-    async def _get_decision(
-        self,
-        messages: list[dict[str, str]],
-        model: str,
-    ) -> AgentDecision:
+    async def _get_decision(self, messages: list[dict[str, str]], model: str) -> AgentDecision:
         """Get a structured decision from the LLM."""
-        result = await self.provider.chat(
-            messages=messages,
-            model=model,
-            temperature=0.1,
-        )
-
+        result = await self.provider.chat(messages=messages, model=model, temperature=0.1)
         content = result.get("content", "")
 
         if not content:
             return AgentDecision(
                 thought_summary="Failed to get model response",
-                action="error",
-                arguments={},
-                reason="Empty response from model",
-                risk="low",
+                action="error", arguments={}, reason="Empty response from model", risk="low",
             )
 
         try:
@@ -282,25 +326,17 @@ class AgentLoop:
             pass
 
         return AgentDecision(
-            thought_summary=content[:500],
-            action="finish",
+            thought_summary=content[:500], action="finish",
             arguments={"raw_response": content},
-            reason="Model returned non-structured response",
-            risk="low",
+            reason="Model returned non-structured response", risk="low",
         )
 
     def _extract_json(self, content: str) -> str | None:
-        """Extract JSON from model output."""
         import re
-
-        json_match = re.search(
-            r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL
-        )
+        json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)
         if json_match:
             return json_match.group(1).strip()
-
         brace_match = re.search(r"\{.*\}", content, re.DOTALL)
         if brace_match:
             return brace_match.group(0).strip()
-
         return None

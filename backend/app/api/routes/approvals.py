@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.app.database.models.approval import Approval
@@ -15,6 +16,23 @@ router = APIRouter(prefix="/api/v1/approvals", tags=["approvals"])
 
 class ApproveRequest(BaseModel):
     permission_type: str = "once"  # once, session, always
+
+
+def _resolve_approval(db: Session, approval_id_or_prefix: str) -> Approval:
+    """Resolve an approval by full ID or prefix."""
+    # Try exact match first
+    approval = db.query(Approval).filter(Approval.id == approval_id_or_prefix).first()
+    if approval:
+        return approval
+    # Try prefix match
+    approval = (
+        db.query(Approval)
+        .filter(Approval.id.startswith(approval_id_or_prefix))
+        .first()
+    )
+    if approval:
+        return approval
+    raise HTTPException(status_code=404, detail=f"Approval not found: {approval_id_or_prefix}")
 
 
 @router.get("")
@@ -52,10 +70,8 @@ async def list_approvals(
 
 @router.get("/{approval_id}")
 async def get_approval(approval_id: str, db: Session = Depends(get_db)):
-    """Get a single approval by ID."""
-    approval = db.query(Approval).filter(Approval.id == approval_id).first()
-    if not approval:
-        raise HTTPException(status_code=404, detail="Approval not found")
+    """Get a single approval by ID or prefix."""
+    approval = _resolve_approval(db, approval_id)
     return {
         "id": approval.id,
         "run_id": approval.run_id,
@@ -75,10 +91,9 @@ async def approve_request(
     request: ApproveRequest,
     db: Session = Depends(get_db),
 ):
-    """Approve a pending approval request."""
-    approval = db.query(Approval).filter(Approval.id == approval_id).first()
-    if not approval:
-        raise HTTPException(status_code=404, detail="Approval not found")
+    """Approve a pending approval request by ID or prefix."""
+    approval = _resolve_approval(db, approval_id)
+
     if approval.status != "pending":
         raise HTTPException(status_code=400, detail=f"Approval is already {approval.status}")
 
@@ -92,7 +107,7 @@ async def approve_request(
     )
 
     return {
-        "id": approval_id,
+        "id": approval.id,
         "status": "approved",
         "permission_type": request.permission_type,
     }
@@ -100,17 +115,15 @@ async def approve_request(
 
 @router.post("/{approval_id}/deny")
 async def deny_request(approval_id: str, db: Session = Depends(get_db)):
-    """Deny a pending approval request."""
-    approval = db.query(Approval).filter(Approval.id == approval_id).first()
-    if not approval:
-        raise HTTPException(status_code=404, detail="Approval not found")
+    """Deny a pending approval request by ID or prefix."""
+    approval = _resolve_approval(db, approval_id)
+
     if approval.status != "pending":
         raise HTTPException(status_code=400, detail=f"Approval is already {approval.status}")
 
     approval.status = "denied"
     db.commit()
 
-    # Deny permission in the engine
     await permission_engine.deny_permission(approval.tool_name)
 
-    return {"id": approval_id, "status": "denied"}
+    return {"id": approval.id, "status": "denied"}

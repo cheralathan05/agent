@@ -1,12 +1,13 @@
-import { MessageSquare, Brain, Settings, Activity, Database, Shield } from 'lucide-react'
+import { MessageSquare, Brain, Settings, Activity, GitCompare, Shield } from 'lucide-react'
 
 const navItems = [
   { id: 'chat', label: 'Chat', icon: MessageSquare },
+  { id: 'review', label: 'Review', icon: GitCompare },
   { id: 'models', label: 'Models', icon: Brain },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const
 
-type View = 'chat' | 'models' | 'settings'
+type View = 'chat' | 'models' | 'settings' | 'review'
 
 interface SidebarProps {
   currentView: View

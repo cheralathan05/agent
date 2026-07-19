@@ -20,6 +20,7 @@ interface AppState {
   messages: Message[]
   isStreaming: boolean
   currentSessionId: string | null
+  reviewRunId: string | null
   
   setHealth: (health: HealthStatus) => void
   setSelectedModel: (model: string) => void
@@ -27,6 +28,7 @@ interface AppState {
   setMessages: (messages: Message[]) => void
   setIsStreaming: (v: boolean) => void
   setCurrentSessionId: (id: string | null) => void
+  setReviewRunId: (id: string | null) => void
   clearMessages: () => void
 }
 
@@ -38,6 +40,7 @@ export const useStore = create<AppState>()(
       messages: [],
       isStreaming: false,
       currentSessionId: null,
+      reviewRunId: null,
 
       setHealth: (health) => set({ health }),
       setSelectedModel: (model) => set({ selectedModel: model }),
@@ -48,6 +51,7 @@ export const useStore = create<AppState>()(
       setMessages: (messages) => set({ messages }),
       setIsStreaming: (v) => set({ isStreaming: v }),
       setCurrentSessionId: (id) => set({ currentSessionId: id }),
+      setReviewRunId: (id) => set({ reviewRunId: id }),
       clearMessages: () => set({ messages: [] }),
     }),
     {
