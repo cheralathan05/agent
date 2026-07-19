@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from backend.app.config import settings
 from backend.app.database.models.verification_result import VerificationResult
 from backend.app.database.session import SessionLocal
+from backend.app.tools.utils import run_cmd_async
 
 
 class VerificationRunner:
@@ -25,23 +25,22 @@ class VerificationRunner:
         ext = full_path.suffix.lower()
         try:
             if ext == ".py":
-                result = subprocess.run(
+                result = await run_cmd_async(
                     ["python", "-m", "py_compile", str(full_path)],
-                    capture_output=True, text=True, timeout=15,
+                    timeout=15,
                 )
                 return {
-                    "status": "passed" if result.returncode == 0 else "failed",
-                    "details": result.stderr if result.returncode != 0 else None,
+                    "status": "passed" if result.get("success") else "failed",
+                    "details": result.get("stderr") if not result.get("success") else None,
                 }
             elif ext in (".js", ".ts", ".jsx", ".tsx"):
-                # Use node --check for JavaScript validation
-                result = subprocess.run(
+                result = await run_cmd_async(
                     ["node", "--check", str(full_path)],
-                    capture_output=True, text=True, timeout=15,
+                    timeout=15,
                 )
                 return {
-                    "status": "passed" if result.returncode == 0 else "failed",
-                    "details": result.stderr if result.returncode != 0 else None,
+                    "status": "passed" if result.get("success") else "failed",
+                    "details": result.get("stderr") if not result.get("success") else None,
                 }
             elif ext in (".json",):
                 import json
@@ -54,8 +53,6 @@ class VerificationRunner:
                 return {"status": "skipped", "reason": f"No syntax checker for {ext}"}
         except FileNotFoundError:
             return {"status": "skipped", "reason": "Syntax checker not found"}
-        except subprocess.TimeoutExpired:
-            return {"status": "skipped", "reason": "Syntax check timed out"}
 
     async def run_tests(
         self,
@@ -64,27 +61,19 @@ class VerificationRunner:
     ) -> dict[str, Any]:
         """Run tests in the workspace."""
         ws = Path(workspace or settings.workspace_path).resolve()
-        try:
-            cmd = ["python", "-m", "pytest"]
-            if test_path:
-                cmd.append(str(ws / test_path))
-            cmd.extend(["-x", "--timeout=60", "-q"])
+        cmd = ["python", "-m", "pytest", "-x", "--timeout=60", "-q"]
+        if test_path:
+            cmd.append(str(ws / test_path))
 
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120, cwd=str(ws),
-            )
-            output = result.stdout + result.stderr
-            passed = "passed" in output.lower() and "failed" not in output.lower()
+        result = await run_cmd_async(cmd, cwd=str(ws), timeout=120)
+        output = result.get("stdout", "") + result.get("stderr", "")
+        passed = result.get("success", False) and "failed" not in output.lower()
 
-            return {
-                "status": "passed" if passed else "failed",
-                "details": output[:2000],
-                "exit_code": result.returncode,
-            }
-        except FileNotFoundError:
-            return {"status": "skipped", "reason": "pytest not found"}
-        except subprocess.TimeoutExpired:
-            return {"status": "failed", "details": "Tests timed out after 120s"}
+        return {
+            "status": "passed" if passed else "failed",
+            "details": output[:2000],
+            "exit_code": result.get("exit_code", -1),
+        }
 
     async def save_result(
         self,

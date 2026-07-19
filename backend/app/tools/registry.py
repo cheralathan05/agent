@@ -133,6 +133,12 @@ def init_tools():
         DetectFrameworkTool,
         BuildProjectMapTool,
     )
+    from backend.app.tools.project.intelligence import (
+        QueryProjectGraphTool,
+        AnalyzeDependenciesTool,
+        AnalyzeArchitectureTool,
+        AnalyzeImpactTool,
+    )
 
     registry.register_all(
         # Filesystem tools
@@ -165,4 +171,8 @@ def init_tools():
         DetectLanguageTool(),
         DetectFrameworkTool(),
         BuildProjectMapTool(),
+        QueryProjectGraphTool(),
+        AnalyzeDependenciesTool(),
+        AnalyzeArchitectureTool(),
+        AnalyzeImpactTool(),
     )

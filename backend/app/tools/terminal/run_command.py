@@ -53,30 +53,24 @@ class RunBackgroundCommandTool(BaseTool):
     async def execute(self, command: str, **kwargs) -> dict[str, Any]:
         """Start a background process."""
         import asyncio
-        import os
         from pathlib import Path
 
         from backend.app.config import settings
+        from backend.app.tools.utils import _split_command
 
         ws = Path(kwargs.get("workspace") or settings.workspace_path).resolve()
 
         try:
-            if os.name == "nt":
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(ws),
-                )
-            else:
-                import shlex
-                args = shlex.split(command)
-                proc = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(ws),
-                )
+            args = _split_command(command)
+            if not args:
+                return {"success": False, "output": "", "error": "Empty command"}
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(ws),
+            )
 
             pid = str(id(proc))
             self._processes[pid] = proc

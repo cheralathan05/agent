@@ -19,6 +19,7 @@ from backend.app.api.routes import (
     settings as settings_routes,
     runs,
     checkpoints,
+    intelligence,
 )
 from backend.app.api.websocket import router as websocket_router
 from backend.app.config import settings
@@ -56,6 +57,7 @@ app.include_router(executions.router)
 app.include_router(settings_routes.router)
 app.include_router(runs.router)
 app.include_router(checkpoints.router)
+app.include_router(intelligence.router)
 app.include_router(websocket_router)
 
 

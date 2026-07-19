@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shlex
 from pathlib import Path
 from typing import Any
 
 from backend.app.config import settings
 from backend.app.security.command_policy import command_policy as cp
+from backend.app.tools.utils import _split_command
 
 
 class Sandbox:
@@ -26,6 +26,9 @@ class Sandbox:
         env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Execute a command in the sandbox.
+        
+        Uses create_subprocess_exec (shell=False) on all platforms to prevent
+        shell injection from LLM-generated commands.
         
         Returns:
             Dict with 'success', 'output', 'error', 'exit_code', 'duration_ms'.
@@ -60,41 +63,35 @@ class Sandbox:
         timeout_seconds = timeout or settings.command_timeout
 
         try:
-            # Use shell=False with shlex for safety
-            if os.name == "nt":
-                # Windows needs special handling
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(work_dir),
-                    env=safe_env,
-                )
-            else:
-                args = shlex.split(command)
-                proc = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(work_dir),
-                    env=safe_env,
-                )
+            # Split command safely - use create_subprocess_exec (shell=False)
+            # on ALL platforms to prevent shell injection
+            args = _split_command(command)
+            if not args:
+                return {
+                    "success": False, "output": "", "error": "Empty command",
+                    "exit_code": -1, "duration_ms": 0,
+                }
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(work_dir),
+                env=safe_env,
+            )
 
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=timeout_seconds,
+                    proc.communicate(), timeout=timeout_seconds,
                 )
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
                 duration = int((asyncio.get_event_loop().time() - start_time) * 1000)
                 return {
-                    "success": False,
-                    "output": "",
+                    "success": False, "output": "",
                     "error": f"Command timed out after {timeout_seconds}s",
-                    "exit_code": -1,
-                    "duration_ms": duration,
+                    "exit_code": -1, "duration_ms": duration,
                 }
 
             duration = int((asyncio.get_event_loop().time() - start_time) * 1000)
@@ -116,19 +113,13 @@ class Sandbox:
 
         except FileNotFoundError as e:
             return {
-                "success": False,
-                "output": "",
-                "error": f"Command not found: {e}",
-                "exit_code": -1,
-                "duration_ms": 0,
+                "success": False, "output": "", "error": f"Command not found: {e}",
+                "exit_code": -1, "duration_ms": 0,
             }
         except Exception as e:
             return {
-                "success": False,
-                "output": "",
-                "error": f"Execution error: {str(e)}",
-                "exit_code": -1,
-                "duration_ms": 0,
+                "success": False, "output": "", "error": f"Execution error: {str(e)}",
+                "exit_code": -1, "duration_ms": 0,
             }
 
     async def check_command(self, command: str) -> dict[str, Any]:
