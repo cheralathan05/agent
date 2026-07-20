@@ -80,8 +80,13 @@ class AgentPanel:
         self.streaming_content = ""
         self.current_model = "qwen3:8b"
         self.input_text = ""
-        self._terminal_width = 80   # Updated by app on resize
-        self._terminal_height = 24  # Updated by app on resize
+        self.input_cursor_row = 0       # Cursor row within input
+        self.input_cursor_col = 0       # Cursor col within input
+        self._input_lines: list[str] = []  # Multiline buffer for display
+        self._is_typing = False         # Whether user is actively typing
+        self._cursor_visible = True     # Blinking cursor toggle
+        self._terminal_width = 80       # Updated by app on resize
+        self._terminal_height = 24      # Updated by app on resize
         # Spinner state
         self._spinner_frame = 0
 
@@ -90,6 +95,8 @@ class AgentPanel:
         self.plans = []
         self.activities = []
         self.streaming_content = ""
+        self.input_text = ""
+        self._input_lines = []
 
     def add_message(self, role: str, content: str):
         self.messages.append({"role": role, "content": content})
@@ -249,85 +256,307 @@ class AgentPanel:
             body,
         )
 
+    def _tick_cursor(self):
+        """Toggle cursor visibility for blinking effect (called periodically)."""
+        self._cursor_visible = not self._cursor_visible
+
+    def _cursor_char(self) -> str:
+        """Return a cursor character (block or pipe depending on visibility)."""
+        if not self._is_typing:
+            return ""
+        return "\u2588" if self._cursor_visible else " "  # █ or space
+
     def render_composer(self) -> Group:
         """Render the input composer area as a standalone renderable.
         
-        Returns a Group that is rendered in the fixed layout['input'] row.
-        Adjusts to a compact 2-line version on short terminals.
+        - When agent is thinking/working: shows an animated thinking indicator
+          with spinner, state label, and cancel hint.
+        - When agent is idle/ready: shows the interactive input box
+          with blinking cursor, multiline support, and active/inactive states.
         """
+        # Check if agent is in an active working state
+        active_states = {
+            "thinking", "planning", "reading", "editing",
+            "running", "testing", "reviewing", "waiting_approval",
+        }
+        if self.agent_state in active_states:
+            return self._render_thinking()
+
         is_compact = self._terminal_height < 15
+        if is_compact:
+            return self._render_compact()
+        return self._render_full()
+
+    def _render_thinking(self) -> Group:
+        """Render an animated thinking indicator while agent is working.
+        
+        Shows a live spinner with the current state label, model info,
+        and a cancel hint. Adapts to compact mode on small terminals.
+        """
+        spinner = SPINNER[self._spinner_frame]
+        is_compact = self._terminal_height < 15
+        box_width = max(30, min(72, self._terminal_width - 8))
+        content_width = box_width - 2
+
+        # State label (human-readable)
+        state_labels = {
+            "thinking": "Thinking",
+            "planning": "Planning",
+            "reading": "Reading project",
+            "editing": "Editing files",
+            "running": "Working",
+            "testing": "Testing",
+            "reviewing": "Reviewing",
+            "waiting_approval": "Waiting for approval",
+        }
+        state_label = state_labels.get(self.agent_state, "Working")
+
+        # Animated sub-status messages that rotate during thinking
+        thinking_messages = [
+            "Processing your request...",
+            "Analyzing the codebase...",
+            "Generating solution...",
+            "Working on it...",
+            "Almost there...",
+        ]
+        msg_idx = self._spinner_frame % len(thinking_messages)
+        status_msg = thinking_messages[msg_idx]
 
         if is_compact:
-            # Compact 2-line composer for short terminals
-            prompt = self.input_text if self.input_text else "Ask MyAgent..."
+            # ── Compact thinking indicator (2 lines) ──
             return Group(
                 Text.assemble(
                     ("  ", ""),
-                    ("▸ ", "bold cyan"),
-                    (prompt, "dim italic" if not self.input_text else "white"),
+                    (f"{spinner} ", "bold cyan"),
+                    (f"{state_label}...", "cyan"),
                 ),
                 Text.assemble(
                     ("   ", ""),
-                    (f"[{self.get_mode_display()}]", "dim"),
-                    (f"  {self.current_model}", "dim"),
+                    (f"{self.current_model}", "bold yellow"),
+                    (" · ", "dim"),
+                    ("Ctrl+C", "dim"),
+                    (" to cancel", "dim"),
                 ),
             )
 
-        # Full-size composer (4 lines)
-        box_width = max(30, min(72, self._terminal_width - 8))
-        prompt_max = box_width - 4
+        # ── Full thinking indicator with box ──
+        # Line 1 content: spinner + state_label + "..."
+        line1_text = f"{spinner} {state_label}..."
+        # Line 2 content: status message with 2-space indent
+        line2_text = f"  {status_msg}"
+        # Line 3 content: cancel hint
+        line3_text = "Press Ctrl+C to cancel"
 
-        # Active mode tags
-        mode_colors = {
-            "build": "cyan", "plan": "blue", "debug": "magenta", "review": "yellow",
-        }
-        modes = ["Build", "Plan", "Debug", "Review"]
-        mode_tags = []
-        for m in modes:
-            color = mode_colors.get(m.lower(), "white")
-            if m.lower() == self.mode:
-                mode_tags.append((f"[{m}]", f"bold {color}"))
-            else:
-                mode_tags.append((f"{m}", "dim"))
-
-        mode_line = Text.assemble(*mode_tags)
-
-        # Prompt text (truncated to fit)
-        prompt = self.input_text if self.input_text else "Ask MyAgent to build, fix, debug, or explain..."
-        if len(prompt) > prompt_max:
-            prompt = prompt[:prompt_max - 3] + "..."
-        prompt_style = "white" if self.input_text else "dim italic"
-
-        # Pad mode line to balance width with model info
-        mode_str = " ".join(t[0].strip() for t in mode_tags)
-        right_info = f"{self.current_model}  Ctrl+Enter"
-        pad = max(0, box_width - len(mode_str) - len(right_info) - 4)
-
-        composer_lines = [
+        lines = [
+            # Top border
             Text.assemble(
                 (f"  {H_TOP_L}", "dim"),
-                (f"{H_LINE * box_width}", "dim"),
+                (f"{H_LINE * content_width}", "dim"),
                 (f"{H_TOP_R}", "dim"),
             ),
+            # Line 1: Spinner + state label
             Text.assemble(
                 (f"  {H_VLINE} ", "dim"),
-                (prompt, prompt_style),
-                (f"{' ' * max(0, box_width - len(prompt))} {H_VLINE}", "dim"),
+                (line1_text, "bold cyan"),
+                (f" {' ' * max(0, content_width - len(line1_text))} {H_VLINE}", "dim"),
             ),
+            # Line 2: Status message + model
+            Text.assemble(
+                (f"  {H_VLINE} ", "dim"),
+                (line2_text, "dim"),
+                (f" {' ' * max(0, content_width - len(line2_text))} {H_VLINE}", "dim"),
+            ),
+            # Line 3: Cancel hint
+            Text.assemble(
+                (f"  {H_VLINE} ", "dim"),
+                (line3_text, "italic dim"),
+                (f" {' ' * max(0, content_width - len(line3_text))} {H_VLINE}", "dim"),
+            ),
+            # Bottom border
             Text.assemble(
                 (f"  {H_BOT_L}", "dim"),
-                (f"{H_LINE * box_width}", "dim"),
+                (f"{H_LINE * content_width}", "dim"),
                 (f"{H_BOT_R}", "dim"),
             ),
         ]
 
-        # Mode + model info line below composer
-        info_line = Text.assemble(
-            ("   ", ""),
-            mode_line,
-            (" " * pad, ""),
-            (f"{self.current_model}", "bold yellow"),
-            ("  Ctrl+Enter", "dim"),
+        # Info line below
+        mode_color = {
+            "build": "cyan", "plan": "blue", "debug": "magenta",
+            "review": "yellow", "ask": "green",
+        }.get(self.mode, "white")
+        mode_tag = Text.assemble(
+            (f"[{self.get_mode_display()}]", f"bold {mode_color}"),
+        )
+        # Animated state indicator in status bar
+        status = Text.assemble(
+            (f"{spinner} ", "bold cyan"),
+            (f"{state_label.lower()}", "cyan"),
         )
 
-        return Group(*composer_lines, info_line)
+        left_info = f" [{self.get_mode_display()}]  {spinner} {state_label.lower()}"
+        right_info = f"{self.current_model}  Ctrl+C"
+        pad = max(4, box_width - 2 - len(left_info) - len(right_info))
+
+        info_line = Text.assemble(
+            ("   ", ""),
+            mode_tag,
+            ("  ", ""),
+            status,
+            (" " * pad, ""),
+            (f"{self.current_model}", "bold yellow"),
+            ("  Ctrl+C", "dim"),
+        )
+
+        return Group(*lines, info_line)
+
+    def _render_compact(self) -> Group:
+        """Compact 2-line composer for short terminals."""
+        prompt = self.input_text if self.input_text else "Ask MyAgent..."
+        cursor = self._cursor_char() if self._is_typing else ""
+        display = self.input_text + cursor if self.input_text else ""
+        return Group(
+            Text.assemble(
+                ("  ", ""),
+                ("▸ ", "bold cyan"),
+                (display if self.input_text else "Ask MyAgent...",
+                 "white" if self.input_text else "dim italic"),
+            ),
+            Text.assemble(
+                ("   ", ""),
+                (f"[{self.get_mode_display()}]", "dim"),
+                (f"  {self.current_model} ", "dim"),
+                (f"{'typing' if self._is_typing else 'ready'}", "green" if self._is_typing else "dim"),
+            ),
+        )
+
+    def _render_full(self) -> Group:
+        """Full-size multi-line composer with box and cursor."""
+        box_width = max(30, min(72, self._terminal_width - 8))
+        content_width = box_width - 2  # Space between │ walls
+
+        # ── Parse input lines ──
+        input_lines = self.input_text.split("\n") if self.input_text else [""]
+
+        cursor_row = self.input_cursor_row
+        cursor_col = self.input_cursor_col
+
+        # ── Determine visible scroll window ──
+        max_display_lines = 3
+        total_lines = len(input_lines)
+        if total_lines <= max_display_lines:
+            start_line = 0
+        else:
+            start_line = max(0, min(
+                cursor_row - 1,
+                total_lines - max_display_lines
+            ))
+
+        visible_lines = input_lines[start_line:start_line + max_display_lines]
+        while len(visible_lines) < max_display_lines:
+            visible_lines.append("")
+
+        # ── Cursor ──
+        cursor_ch = self._cursor_char()
+        has_content = bool(self.input_text)
+
+        # ── Build box ──
+        lines = [
+            Text.assemble(
+                (f"  {H_TOP_L}", "dim"),
+                (f"{H_LINE * content_width}", "dim"),
+                (f"{H_TOP_R}", "dim"),
+            )
+        ]
+
+        # Content lines
+        for i, line in enumerate(visible_lines):
+            abs_idx = start_line + i
+            is_cursor_line = abs_idx == cursor_row
+            display_line = line[:content_width]
+
+            if not has_content and i == 0:
+                # Empty buffer - show the placeholder on first line
+                if is_cursor_line and cursor_ch:
+                    lines.append(Text.assemble(
+                        (f"  {H_VLINE} ", "dim"),
+                        (cursor_ch, "bold cyan"),
+                        ("Ask MyAgent to build, fix, debug, or explain...", "dim italic"),
+                        (f" {' ' * max(0, content_width - 1 - 46)} {H_VLINE}", "dim"),
+                    ))
+                else:
+                    lines.append(Text.assemble(
+                        (f"  {H_VLINE} ", "dim"),
+                        ("Ask MyAgent to build, fix, debug, or explain...", "dim italic"),
+                        (f" {' ' * max(0, content_width - 46)} {H_VLINE}", "dim"),
+                    ))
+                # Remaining lines are blank
+                continue
+
+            if is_cursor_line and cursor_ch:
+                # Show cursor within text
+                before = display_line[:cursor_col]
+                at_cursor = display_line[cursor_col:cursor_col + 1] if cursor_col < len(display_line) else " "
+                after = display_line[cursor_col + 1:] if cursor_col < len(display_line) else ""
+                line_content = before + cursor_ch + at_cursor + after
+                if len(line_content) > content_width:
+                    line_content = line_content[:content_width]
+                lines.append(Text.assemble(
+                    (f"  {H_VLINE} ", "dim"),
+                    (line_content, "white"),
+                    (f" {' ' * max(0, content_width - len(line_content))} {H_VLINE}", "dim"),
+                ))
+            else:
+                visible_text = display_line + (" " if is_cursor_line and not cursor_ch else "")
+                lines.append(Text.assemble(
+                    (f"  {H_VLINE} ", "dim"),
+                    (visible_text, "white"),
+                    (f" {' ' * max(0, content_width - len(visible_text))} {H_VLINE}", "dim"),
+                ))
+
+        # Bottom border
+        lines.append(Text.assemble(
+            (f"  {H_BOT_L}", "dim"),
+            (f"{H_LINE * content_width}", "dim"),
+            (f"{H_BOT_R}", "dim"),
+        ))
+
+        # Scroll indicator
+        scroll_info = ""
+        if total_lines > max_display_lines:
+            scroll_info = f"{start_line + 1}-{min(start_line + max_display_lines, total_lines)}/{total_lines}"
+
+        # ── Info line below composer ──
+        mode_color = {
+            "build": "cyan", "plan": "blue", "debug": "magenta",
+            "review": "yellow", "ask": "green",
+        }.get(self.mode, "white")
+        mode_tag = Text.assemble(
+            (f"[{self.get_mode_display()}]", f"bold {mode_color}"),
+        )
+        status = Text.assemble(
+            ("● ", "green" if self._is_typing else "dim"),
+            ("typing" if self._is_typing else "ready", "green" if self._is_typing else "dim"),
+        )
+
+        # Calculate padding for right-aligned model/kbd info
+        left_info = f" [{self.get_mode_display()}]  \u25cf {'typing' if self._is_typing else 'ready'}"
+        if scroll_info:
+            left_info += f"  {scroll_info}"
+        right_info = f"{self.current_model}  Enter \u00b7 Shift+Enter"
+        pad = max(4, box_width - 2 - len(left_info) - len(right_info))
+
+        info_line = Text.assemble(
+            ("   ", ""),
+            mode_tag,
+            ("  ", ""),
+            status,
+            (" " * pad, ""),
+            (scroll_info + "  " if scroll_info else "", "dim"),
+            (f"{self.current_model}", "bold yellow"),
+            ("  Enter", "dim"),
+            (" \u00b7 ", "dim"),
+            ("Shift+Enter", "dim"),
+        )
+
+        return Group(*lines, info_line)

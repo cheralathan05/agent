@@ -10,12 +10,12 @@ from typing import Optional
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
-from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 
 from ..client.api import MyAgentAPI
 from .commands import CommandHandler, CommandResult
-from .input import InputHandler
+from .input import InputHandler, KeyReader
 from .panels import HeaderPanel, ExplorerPanel, AgentPanel, ContextPanel, StatusBar
 
 
@@ -58,6 +58,12 @@ class MyAgentTUI:
         self._ollama_checked = False
         self._cancelled = False
 
+        # Layout sections (created in _build_layout)
+        self._layout_header: Optional[Layout] = None
+        self._layout_main: Optional[Layout] = None
+        self._layout_input: Optional[Layout] = None
+        self._layout_status: Optional[Layout] = None
+
         # Apply initial config
         self.header.model = self.current_model
         self.context.model = self.current_model
@@ -77,120 +83,137 @@ class MyAgentTUI:
             return 24
 
     def _build_layout(self) -> Layout:
-        """Build the multi-panel layout with responsive visibility.
+        """Build the multi-panel layout.
         
         Layout structure (top to bottom):
           header  (1 line)   - fixed, always visible
-          main    (ratio=1)  - scrollable conversation area
-          input   (4 lines)  - fixed, ALWAYS visible composer/input box
+          main    (ratio=1)  - conversation area (agent + optional sidebars)
+          input   (4/2 line) - fixed, ALWAYS visible composer
           status  (1 line)   - fixed, always visible
           
-        The input area and status bar are ALWAYS visible regardless of
-        content size or terminal dimensions. The right sidebar is hidden
-        first when space is tight.
+        CRITICAL: Does NOT use nested split_row for main area.
+        Instead, the main Layout is updated directly with the agent panel
+        (or a Columns of panels) in _render_panels.
+        This avoids a known issue where nested Layout children fail to render.
         """
-        layout = Layout()
-        layout.split_column(
-            Layout(name="header", size=1),
-            Layout(name="main", ratio=1),
-            Layout(name="input", size=input_size),
-            Layout(name="status", size=1),
-        )
-
-        # Pass terminal dimensions to agent panel
+        # Read terminal dimensions
         width = self._get_terminal_width()
         height = self._get_terminal_height()
         self._terminal_width = width
         self.agent._terminal_width = width
 
-        # Determine input area size based on terminal height
-        # On short terminals, reduce input to 2 lines (compact mode)
+        # Input size based on terminal height
         input_size = 2 if height < 15 else 4
 
-        # Main area split - hide sidebar BEFORE clipping input or status
+        # Create root layout sections
+        self._layout_header = Layout(name="header", size=1)
+        self._layout_main = Layout(name="main", ratio=1)
+        self._layout_input = Layout(name="input", size=input_size)
+        self._layout_status = Layout(name="status", size=1)
+
+        # Build root layout - NO nested split_row!
+        layout = Layout()
+        layout.split_column(
+            self._layout_header,
+            self._layout_main,
+            self._layout_input,
+            self._layout_status,
+        )
+
+        # Determine sidebar visibility (hiding BEFORE input/status)
         if width < 80:
-            # Small terminal: agent only - hide sidebar
-            layout["main"].split_row(
-                Layout(name="agent", ratio=1),
-            )
             self.explorer.visible = False
             self.context.visible = False
         elif width < 110:
-            # Medium terminal: agent + context (no explorer)
-            layout["main"].split_row(
-                Layout(name="agent", ratio=3),
-                Layout(name="context", ratio=1),
-            )
             self.explorer.visible = False
             self.context.visible = True
         else:
-            # Large terminal: explorer + agent + context
-            layout["main"].split_row(
-                Layout(name="explorer", ratio=2),
-                Layout(name="agent", ratio=5),
-                Layout(name="context", ratio=1),
-            )
             self.explorer.visible = True
             self.context.visible = True
 
+        # The main layout is updated directly in _render_panels
+        # No split_row needed!
+
         return layout
 
-    def _render_panels(self, layout: Layout):
-        """Render all panels into the layout.
+    def _build_main_renderable(self):
+        """Build the main area renderable with proper proportional sizing.
         
-        The input area and status bar are ALWAYS rendered.
-        Side panels (explorer, context) are hidden on small terminals.
+        Uses Table with explicit ratios instead of nested Layout or Columns
+        for reliable side-by-side display.
+        
+        Returns: agent panel directly, or a Table containing agent + sidebars.
         """
         try:
-            layout["header"].update(self.header)
+            # Build table columns based on visible panels
+            columns = []
+            row = []
+
+            if self.explorer.visible:
+                columns.append({"ratio": 2, "renderable": self.explorer})
+
+            columns.append({"ratio": 5, "renderable": self.agent})
+
+            if self.context.visible:
+                columns.append({"ratio": 2, "renderable": self.context})
+
+            if len(columns) > 1:
+                table = Table(
+                    show_header=False, show_edge=False,
+                    show_lines=False, padding=0, expand=True,
+                )
+                for col in columns:
+                    table.add_column(ratio=col["ratio"])
+                table.add_row(*[c["renderable"] for c in columns])
+                return table
+            else:
+                return self.agent
         except Exception:
-            layout["header"].update(Text(" ◆ MYAGENT", "bold cyan"))
+            return self.agent
+
+    def _render_panels(self):
+        """Render all panels into the layout using direct Layout updates.
+        
+        The agent panel (+ optional sidebars) is rendered directly into
+        layout_main using Table for proportional sizing.
+        Input and status areas are ALWAYS rendered.
+        """
+        # ── Header ──
+        if self._layout_header is not None:
+            try:
+                self._layout_header.update(self.header)
+            except Exception:
+                pass
+
+        # ── Main area: agent + optional sidebars ──
+        if self._layout_main is not None:
+            try:
+                self._layout_main.update(self._build_main_renderable())
+            except Exception as e:
+                try:
+                    self._layout_main.update(Text(f"Main area: {e}"))
+                except Exception:
+                    pass
 
         # ── Input area - ALWAYS visible ──
-        try:
-            layout["input"].update(self.agent.render_composer())
-        except Exception:
+        if self._layout_input is not None:
             try:
-                layout["input"].update(Text(" > "))
+                self._layout_input.update(self.agent.render_composer())
             except Exception:
-                pass
+                try:
+                    self._layout_input.update(Text("Input area"))
+                except Exception:
+                    pass
 
         # ── Status bar - ALWAYS visible ──
-        try:
-            layout["status"].update(self.status)
-        except Exception:
-            layout["status"].update(Text(""))
-
-        # ── Main area panels ──
-        try:
-            if self.explorer.visible:
-                layout["explorer"].update(self.explorer)
-            else:
-                layout["explorer"].update(Text(""))
-        except Exception:
+        if self._layout_status is not None:
             try:
-                layout["explorer"].update(Text(""))
+                self._layout_status.update(self.status)
             except Exception:
-                pass
-
-        try:
-            layout["agent"].update(self.agent)
-        except Exception:
-            try:
-                layout["agent"].update(Text("Agent panel error"))
-            except Exception:
-                pass
-
-        try:
-            if self.context.visible:
-                layout["context"].update(self.context)
-            else:
-                layout["context"].update(Text(""))
-        except Exception:
-            try:
-                layout["context"].update(Text(""))
-            except Exception:
-                pass
+                try:
+                    self._layout_status.update(Text("Status bar"))
+                except Exception:
+                    pass
 
     def _update_git_state(self):
         """Update git state with caching (max once per 3 seconds)."""
@@ -275,9 +298,13 @@ class MyAgentTUI:
             new_width = self._get_terminal_width()
             if abs(new_width - self._terminal_width) > 5:
                 self._layout = self._build_layout()
+                try:
+                    self._live.update(self._layout)
+                except Exception:
+                    pass
 
             self._sync_state()
-            self._render_panels(self._layout)
+            self._render_panels()
             try:
                 self._live.refresh()
             except Exception:
@@ -286,8 +313,9 @@ class MyAgentTUI:
     def _refresh_streaming(self):
         """Lightweight refresh during streaming.
         
-        Updates agent panel (conversation + spinner) and status bar.
-        The input area is ALWAYS refreshed to keep it visible.
+        Updates agent (conversation + spinner), main area (keeps sidebars!),
+        input area, and status bar. Uses _build_main_renderable() to ensure
+        sidebars stay visible during streaming.
         """
         if self._live:
             self.agent.agent_state = "thinking"
@@ -295,9 +323,12 @@ class MyAgentTUI:
             self.status.agent_state = "thinking"
             self.status.context_pct = self.context.context_percent()
             try:
-                self._layout["agent"].update(self.agent)
-                self._layout["input"].update(self.agent.render_composer())
-                self._layout["status"].update(self.status)
+                if self._layout_main is not None:
+                    self._layout_main.update(self._build_main_renderable())
+                if self._layout_input is not None:
+                    self._layout_input.update(self.agent.render_composer())
+                if self._layout_status is not None:
+                    self._layout_status.update(self.status)
                 self._live.refresh()
             except Exception:
                 pass
@@ -455,9 +486,8 @@ class MyAgentTUI:
             self._refresh_display()
 
     async def run(self):
-        """Main TUI loop with proper Live management."""
+        """Main TUI loop with proper Live management and interactive input."""
         self.running = True
-
         self._interrupted = False
 
         # Initial health check
@@ -470,6 +500,10 @@ class MyAgentTUI:
         self._update_git_state()
         self._sync_state()
 
+        # Start the key reader
+        self.key_reader = KeyReader()
+        self.key_reader.start()
+
         console = Console()
 
         # Use Live for rendering
@@ -477,37 +511,90 @@ class MyAgentTUI:
             self._layout,
             console=console,
             screen=False,
-            refresh_per_second=8,
+            refresh_per_second=12,
             vertical_overflow="visible",
         ) as live:
             self._live = live
 
             while self.running:
-                # Show latest state before reading input
+                # Enter interactive reading mode
+                self.agent._is_typing = False
+                self.agent.input_text = ""
+                self.agent.input_cursor_row = 0
+                self.agent.input_cursor_col = 0
+                self.agent._input_lines = [""]
+                self.input_handler.reset()
                 self._refresh_display()
 
-                try:
-                    # Read input using simple input() - handled in executor
-                    user_input = await self.input_handler.read()
-                except (EOFError, KeyboardInterrupt):
-                    # Ctrl+C: cancel operation if streaming, exit if idle
+                # ── Interactive key-reading loop ──
+                submitted_text: Optional[str] = None
+                cursor_tick = 0
+
+                while submitted_text is None and self.running:
+                    try:
+                        key = await asyncio.wait_for(
+                            self.key_reader.next_key(),
+                            timeout=0.25,
+                        )
+                    except asyncio.TimeoutError:
+                        # Periodic cursor blink tick (always runs, even on empty buffer)
+                        cursor_tick += 1
+                        if cursor_tick >= 5:  # Blink every ~5 * 0.25s = 1.25s
+                            self.agent._tick_cursor()
+                            cursor_tick = 0
+                            self._refresh_display()
+                        continue
+                    except (Exception, asyncio.CancelledError):
+                        submitted_text = "/exit"
+                        break
+
+                    # Process the key via InputHandler
+                    result = self.input_handler.handle_key(key)
+
+                    # Sync state from InputHandler buffer to AgentPanel
+                    self.agent.input_text = self.input_handler.buffer.text
+                    self.agent.input_cursor_row = self.input_handler.buffer.cursor_row
+                    self.agent.input_cursor_col = self.input_handler.buffer.cursor_col
+                    # Always show typing state while in the reading loop
+                    self.agent._is_typing = True
+
+                    if result is not None:
+                        # Either submitted text or cancel
+                        submitted_text = result
+                        break
+
+                    # Refresh display after each key
+                    self._refresh_display()
+
+                # ── End of reading loop ──
+
+                # Handle the submitted message
+                user_input = submitted_text or ""
+
+                if user_input == "__CANCEL__":
+                    # User cancelled (Ctrl+C or Esc)
                     if self.agent.agent_state in ("thinking", "planning", "reading", "editing", "running", "testing"):
                         self._cancelled = True
                         self.agent.agent_state = "ready"
                         self.agent.streaming_content = ""
                         self._refresh_display()
-                        continue
-                    else:
-                        user_input = "/exit"
+                    continue
 
                 if not user_input.strip():
                     continue
+
+                if user_input == "/exit":
+                    self.running = False
+                    break
 
                 # Process the message
                 await self._handle_user_message(user_input.strip())
 
                 # Final refresh after processing
                 self._refresh_display()
+
+            # Stop the key reader
+            await self.key_reader.stop()
 
             # Exit sequence
             self._live = None
