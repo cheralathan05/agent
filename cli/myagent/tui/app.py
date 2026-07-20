@@ -50,6 +50,7 @@ class MyAgentTUI:
         self.running = False
         self.current_model = model or os.environ.get("OLLAMA_MODEL", "qwen3:8b")
         self.messages: list[dict] = []
+        self._system_prompt_added = False
         self._live: Optional[Live] = None
         self._layout: Optional[Layout] = None
         self._last_git_check = 0.0
@@ -57,6 +58,14 @@ class MyAgentTUI:
         self._has_repo = False
         self._ollama_checked = False
         self._cancelled = False
+
+        # Streaming throttle (60fps ≈ 16ms, but polling is at 50ms to save CPU)
+        self._last_stream_refresh = 0.0
+        
+        # Conversation context count (for display)
+        self._turn_count = 0
+        
+
 
         # Layout sections (created in _build_layout)
         self._layout_header: Optional[Layout] = None
@@ -195,15 +204,14 @@ class MyAgentTUI:
                 except Exception:
                     pass
 
-        # ── Input area - ALWAYS visible ──
-        if self._layout_input is not None:
-            try:
-                self._layout_input.update(self.agent.render_composer())
-            except Exception:
-                try:
-                    self._layout_input.update(Text("Input area"))
-                except Exception:
-                    pass
+        # ── Input area - ALWAYS visible ──                if self._layout_input is not None:
+                    try:
+                        self._layout_input.update(self.agent.render_composer(self._turn_count))
+                    except Exception:
+                        try:
+                            self._layout_input.update(Text("Input area"))
+                        except Exception:
+                            pass
 
         # ── Status bar - ALWAYS visible ──
         if self._layout_status is not None:
@@ -311,11 +319,10 @@ class MyAgentTUI:
                 pass
 
     def _refresh_streaming(self):
-        """Lightweight refresh during streaming.
+        """Fast refresh during streaming.
         
-        Updates agent (conversation + spinner), main area (keeps sidebars!),
-        input area, and status bar. Uses _build_main_renderable() to ensure
-        sidebars stay visible during streaming.
+        Updates agent (spinner + streaming content), input area, and status bar.
+        Uses _build_main_renderable() to rebuild the main area including sidebars.
         """
         if self._live:
             self.agent.agent_state = "thinking"
@@ -326,7 +333,7 @@ class MyAgentTUI:
                 if self._layout_main is not None:
                     self._layout_main.update(self._build_main_renderable())
                 if self._layout_input is not None:
-                    self._layout_input.update(self.agent.render_composer())
+                    self._layout_input.update(self.agent.render_composer(self._turn_count))
                 if self._layout_status is not None:
                     self._layout_status.update(self.status)
                 self._live.refresh()
@@ -367,6 +374,32 @@ class MyAgentTUI:
         if self.messages:
             self.context.files_read = max(self.context.files_read, len(self.messages) // 2)
 
+    def _ensure_system_prompt(self):
+        """Inject system prompt at the start of conversation if not already added.
+        
+        This ensures the LLM maintains conversation context across turns.
+        """
+        if not self._system_prompt_added:
+            system_msg = {
+                "role": "system",
+                "content": (
+                    "You are MyAgent, a world-class AI software engineering assistant. "
+                    "You help users build, debug, analyze, and improve their code.\n\n"
+                    "CONTEXT MAINTENANCE: This is a CONTINUING CONVERSATION. "
+                    "You MUST remember and reference ALL previous messages in this conversation. "
+                    "Each new message builds on what was discussed before. "
+                    "Do not restart or forget context between messages.\n\n"
+                    "Guidelines:\n"
+                    "- Provide complete, working solutions\n"
+                    "- Explain your reasoning clearly\n"
+                    "- Reference previous context when relevant\n"
+                    "- Be concise but thorough\n"
+                    "- Format code with proper markdown code blocks"
+                )
+            }
+            self.messages.insert(0, system_msg)
+            self._system_prompt_added = True
+
     async def _handle_user_message(self, text: str):
         """Process a user message - either a command or a chat message."""
         if InputHandler.is_slash_command(text):
@@ -380,7 +413,14 @@ class MyAgentTUI:
                 return
 
             if result.output == "__CLEAR__":
+                # Clear BOTH backend messages AND UI messages
+                self.messages = []
                 self.agent.clear()
+                self._system_prompt_added = False
+                self._turn_count = 0
+                self.context.commands_run = 0
+                self.context.files_read = 0
+                self.context.files_changed = 0
                 return
 
             if result.output:
@@ -406,17 +446,27 @@ class MyAgentTUI:
             # Clear input area
             self.agent.input_text = ""
         else:
+            # Ensure system prompt is set for conversation context
+            if not self.messages:
+                self._ensure_system_prompt()
+
+            # Track conversation turn
+            self._turn_count += 1
+
             # Regular chat message - stream from backend
             self.messages.append({"role": "user", "content": text})
             self.agent.add_message("user", text)
             self.agent.agent_state = "thinking"
             self.agent.streaming_content = ""
-            # Clear the input placeholder
             self.agent.input_text = ""
+
+            # Update status with turn info
+            self.status.message_count = self._turn_count
+            self.status.session_start = getattr(self.status, 'session_start', time.time())
 
             self._refresh_display()
 
-            # Create a plan for complex requests (build/create/implement/add/make/analyze)
+            # Create a plan for complex requests
             is_complex = any(kw in text.lower() for kw in [
                 "build", "create", "implement", "add", "make",
                 "analyze", "fix", "debug", "refactor", "update",
@@ -433,9 +483,8 @@ class MyAgentTUI:
 
             # Stream response
             full_response = ""
-            stream_count = 0
-            display_count = 0
             self._cancelled = False
+            self._last_stream_refresh = 0.0
 
             try:
                 async for data in self.api.stream_chat(self.messages, self.current_model):
@@ -447,10 +496,9 @@ class MyAgentTUI:
                         chunk = data.get("data", {}).get("content", "")
                         full_response += chunk
                         self.agent.streaming_content = full_response
-                        stream_count += 1
-                        # Batch updates: every 5 tokens or every 200 chars
-                        if stream_count % 5 == 0 or len(full_response) - display_count > 200:
-                            display_count = len(full_response)
+                        now = time.monotonic()
+                        if now - self._last_stream_refresh >= 0.03:
+                            self._last_stream_refresh = now
                             self._refresh_streaming()
                     elif event == "complete":
                         content = data.get("data", {}).get("content", "")
@@ -516,17 +564,24 @@ class MyAgentTUI:
         ) as live:
             self._live = live
 
+            # Set session start
+            now = time.time()
+            self.context._session_start = now
+            self.status.session_start = now
+
             while self.running:
+                # Advance agent animations
+                self.agent.tick_spinner()
+
                 # Enter interactive reading mode
                 self.agent._is_typing = False
                 self.agent.input_text = ""
                 self.agent.input_cursor_row = 0
                 self.agent.input_cursor_col = 0
-                self.agent._input_lines = [""]
                 self.input_handler.reset()
                 self._refresh_display()
 
-                # ── Interactive key-reading loop ──
+                # ── Interactive key-reading loop (60fps compatible, CPU-efficient) ──
                 submitted_text: Optional[str] = None
                 cursor_tick = 0
 
@@ -534,15 +589,19 @@ class MyAgentTUI:
                     try:
                         key = await asyncio.wait_for(
                             self.key_reader.next_key(),
-                            timeout=0.25,
+                            timeout=0.05,  # 20fps polling - saves CPU
                         )
                     except asyncio.TimeoutError:
-                        # Periodic cursor blink tick (always runs, even on empty buffer)
+                        self.agent.tick_spinner()
+
+                        # Cursor blink every ~1s (20 ticks at 50ms)
                         cursor_tick += 1
-                        if cursor_tick >= 5:  # Blink every ~5 * 0.25s = 1.25s
+                        if cursor_tick >= 20:
                             self.agent._tick_cursor()
                             cursor_tick = 0
-                            self._refresh_display()
+
+                        # Always refresh to show cursor blink + animations
+                        self._refresh_display()
                         continue
                     except (Exception, asyncio.CancelledError):
                         submitted_text = "/exit"
@@ -550,20 +609,15 @@ class MyAgentTUI:
 
                     # Process the key via InputHandler
                     result = self.input_handler.handle_key(key)
-
-                    # Sync state from InputHandler buffer to AgentPanel
                     self.agent.input_text = self.input_handler.buffer.text
                     self.agent.input_cursor_row = self.input_handler.buffer.cursor_row
                     self.agent.input_cursor_col = self.input_handler.buffer.cursor_col
-                    # Always show typing state while in the reading loop
                     self.agent._is_typing = True
 
                     if result is not None:
-                        # Either submitted text or cancel
                         submitted_text = result
                         break
 
-                    # Refresh display after each key
                     self._refresh_display()
 
                 # ── End of reading loop ──
@@ -572,7 +626,6 @@ class MyAgentTUI:
                 user_input = submitted_text or ""
 
                 if user_input == "__CANCEL__":
-                    # User cancelled (Ctrl+C or Esc)
                     if self.agent.agent_state in ("thinking", "planning", "reading", "editing", "running", "testing"):
                         self._cancelled = True
                         self.agent.agent_state = "ready"
@@ -588,7 +641,13 @@ class MyAgentTUI:
                     break
 
                 # Process the message
+                start_time = time.time()
                 await self._handle_user_message(user_input.strip())
+                self.agent.response_time = time.time() - start_time
+                self.status.response_time = self.agent.response_time
+
+                # Update session stats
+                self.status.message_count = self.agent.session_message_count
 
                 # Final refresh after processing
                 self._refresh_display()

@@ -1,28 +1,37 @@
-"""Agent workspace panel - the primary AI conversation area."""
+"""Premium Agent workspace panel - the primary AI conversation area with animations.
+
+Features:
+  - Rich message bubbles for user/assistant messages
+  - Typewriter streaming effect
+  - Animated thinking indicator with pulsating progress
+  - Welcome screen with particle sparkles
+  - Enhanced code rendering with language badges
+  - Mode display with gradient colors
+"""
 
 import sys
 from typing import Optional
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
+from rich.syntax import Syntax
 from rich.text import Text
 
-
-# Detect if terminal supports Unicode box-drawing characters
-_SUPPORTS_UNICODE = not (
-    sys.platform == "win32" and (
-        "cmd" in sys.stdout.encoding or
-        getattr(sys.stdout, "encoding", "").lower() in ("cp437", "cp850", "latin-1")
-    )
+from ..animation import (
+    SparkleManager, AnimatedBar, gradient_text,
+    pulsing_style, _SUPPORTS_UNICODE
 )
 
+
+# ── Box-drawing characters ────────────────────────
+
 if _SUPPORTS_UNICODE:
-    H_TOP_L = "\u250c"   # ┌
-    H_TOP_R = "\u2510"   # ┐
-    H_BOT_L = "\u2514"   # └
-    H_BOT_R = "\u2518"   # ┘
-    H_LINE  = "\u2500"   # ─
-    H_VLINE = "\u2502"   # │
+    H_TOP_L = "┌"
+    H_TOP_R = "┐"
+    H_BOT_L = "└"
+    H_BOT_R = "┘"
+    H_LINE  = "─"
+    H_VLINE = "│"
 else:
     H_TOP_L = "+"
     H_TOP_R = "+"
@@ -32,30 +41,43 @@ else:
     H_VLINE = "|"
 
 
-# Spinner frames for animated activity indicator
-_SPINNER_FRAMES = ["\u25d0", "\u25d3", "\u25d1", "\u25d2"]  # ◐◓◑◒
-_FALLBACK_SPINNER = ["|", "/", "-", "\\"]
+# ── Spinner frames ────────────────────────────────
 
+_SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+_FALLBACK_SPINNER = ["|", "/", "-", "\\"]
 if _SUPPORTS_UNICODE:
     SPINNER = _SPINNER_FRAMES
 else:
     SPINNER = _FALLBACK_SPINNER
 
+# Pulsing frames for thinking animation
+_PULSE_FRAMES = ["·", "•", "●", "○", "•", "·"]
+_THINKING_DOTS = ["", ".", "..", "...", "..", "."]
+
+# Color schemes for mode display
+_MODE_SCHEMES = {
+    "plan":   "blue",
+    "build":  "cyan",
+    "debug":  "magenta",
+    "review": "yellow",
+    "ask":    "green",
+}
+
 
 class PlanItem:
-    """A single item in the agent's live plan."""
+    """A single item in the agent's live plan with enhanced styling."""
 
     def __init__(self, description: str, state: str = "pending"):
         self.description = description
-        self.state = state  # pending, running, completed, failed
+        self.state = state
 
     @property
     def render(self) -> Text:
         icons = {
-            "pending": ("○", "dim"),
-            "running": ("●", "bold cyan"),
+            "pending":   ("○", "dim"),
+            "running":   ("●", "bold cyan"),
             "completed": ("✓", "bold green"),
-            "failed": ("✗", "bold red"),
+            "failed":    ("✗", "bold red"),
         }
         icon, style = icons.get(self.state, ("○", "dim"))
         return Text.assemble(
@@ -65,11 +87,7 @@ class PlanItem:
 
 
 class AgentPanel:
-    """Main agent workspace displaying conversation, plan, and activities.
-    
-    Renders without borders - just clean text layout.
-    The conversation area is the primary focus.
-    """
+    """Premium agent workspace with full animation support."""
 
     def __init__(self):
         self.messages: list[dict] = []
@@ -79,16 +97,33 @@ class AgentPanel:
         self.agent_state = "ready"
         self.streaming_content = ""
         self.current_model = "qwen3:8b"
+        self.token_count = 0
+        self.response_time = 0.0
+        
+        # Input state
         self.input_text = ""
-        self.input_cursor_row = 0       # Cursor row within input
-        self.input_cursor_col = 0       # Cursor col within input
-        self._input_lines: list[str] = []  # Multiline buffer for display
-        self._is_typing = False         # Whether user is actively typing
-        self._cursor_visible = True     # Blinking cursor toggle
-        self._terminal_width = 80       # Updated by app on resize
-        self._terminal_height = 24      # Updated by app on resize
-        # Spinner state
+        self.input_cursor_row = 0
+        self.input_cursor_col = 0
+        self._input_lines: list[str] = []
+        self._is_typing = False
+        self._cursor_visible = True
+        
+        # Terminal dimensions
+        self._terminal_width = 80
+        self._terminal_height = 24
+        
+        # Animation state
         self._spinner_frame = 0
+        self._pulse_frame = 0
+        self._thinking_dot_frame = 0
+        self._sparkles = SparkleManager(12)
+        self._welcome_frame = 0
+        self._fade_counter = 0
+        
+        # Session stats
+        self.session_message_count = 0
+
+    # ── State management ──
 
     def clear(self):
         self.messages = []
@@ -97,9 +132,13 @@ class AgentPanel:
         self.streaming_content = ""
         self.input_text = ""
         self._input_lines = []
+        self.token_count = 0
+        self.session_message_count = 0
+        self._sparkles = SparkleManager(12)
 
     def add_message(self, role: str, content: str):
         self.messages.append({"role": role, "content": content})
+        self.session_message_count += 1
 
     def set_streaming(self, content: str):
         self.streaming_content = content
@@ -108,17 +147,28 @@ class AgentPanel:
         self.activities.append({"icon": icon, "text": text, "style": style})
         if len(self.activities) > 50:
             self.activities.pop(0)
+        # Sparkle burst on new activity
+        if icon in ("✓", "●", "✦"):
+            self._sparkles.add_burst(3, 0, 2)
 
     def add_plan(self, description: str, state: str = "pending"):
         self.plans.append(PlanItem(description, state))
 
     def update_plan(self, index: int, state: str):
         if 0 <= index < len(self.plans):
+            old_state = self.plans[index].state
             self.plans[index].state = state
+            # Sparkle on completion
+            if old_state != "completed" and state == "completed":
+                self._sparkles.add_burst(5, 0, 3)
 
     def tick_spinner(self):
-        """Advance the spinner animation by one frame."""
+        """Advance spinner and pulse animations."""
         self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER)
+        self._pulse_frame = (self._pulse_frame + 1) % len(_PULSE_FRAMES)
+        self._thinking_dot_frame = (self._thinking_dot_frame + 1) % len(_THINKING_DOTS)
+        self._sparkles.tick()
+        self._welcome_frame += 1
 
     def get_mode_display(self) -> str:
         labels = {
@@ -127,32 +177,36 @@ class AgentPanel:
         }
         return labels.get(self.mode, "BUILD")
 
+    # ── Main render ──
+
     def __rich__(self) -> RenderableType:
         elements = []
 
-        # ── Mode header line ──
-        mode_color = {
-            "plan": "blue", "build": "cyan", "debug": "magenta",
-            "review": "yellow", "ask": "green",
-        }.get(self.mode, "white")
+        # ── Mode header line with gradient ──
+        mode_color = _MODE_SCHEMES.get(self.mode, "white")
+        # Cycle through colors slowly for a breathing effect
+        scheme_idx = self._welcome_frame // 120
+        schemes = ["cyberpunk", "neon", "ocean"]
+        scheme = schemes[scheme_idx % len(schemes)]
+        
+        mode_brand = gradient_text(f"  ◆ {self.get_mode_display()}", scheme, self._welcome_frame)
 
-        mode_line = Text.assemble(
-            ("  ", ""),
-            (f"{self.get_mode_display()}", f"bold {mode_color}"),
+        elements.append(Text.assemble(
+            mode_brand,
             (" │ ", "dim"),
             self._state_renderable(),
-        )
-        elements.append(mode_line)
+        ))
 
-        # ── Plan section ──
+        # ── Plan section with animated header ──
         if self.plans:
             elements.append(Text(""))
-            # Plan header
-            elements.append(Text(f"  {H_LINE * 5} Plan {H_LINE * 25}", "dim"))
+            pulse_ch = _PULSE_FRAMES[self._pulse_frame] if any(p.state == "running" for p in self.plans) else "─"
+            elements.append(Text(f"  {H_LINE * 3} {pulse_ch} Plan {pulse_ch} {H_LINE * 20}", "dim"))
             for p in self.plans:
                 elements.append(p.render)
+            elements.append(Text(f"  {H_LINE * 30}", "dim"))
 
-        # ── Activities (tool calls) ──
+        # ── Activities (tool calls) with sparkles ──
         if self.activities:
             recent = self.activities[-10:]
             elements.append(Text(""))
@@ -160,6 +214,9 @@ class AgentPanel:
                 icon = a["icon"]
                 text = a["text"]
                 style = a["style"]
+                # Animated sparkle dot for certain activities
+                if icon in ("✓", "●", "✦"):
+                    icon = f"{_PULSE_FRAMES[self._pulse_frame]}" if icon == "●" else icon
                 elements.append(Text.assemble(
                     ("  ", ""),
                     (f"{icon} ", style),
@@ -169,7 +226,7 @@ class AgentPanel:
         # ── Conversation messages ──
         if self.messages:
             elements.append(Text(""))
-            for msg in self.messages[-8:]:
+            for msg in self.messages[-6:]:
                 if msg["role"] == "user":
                     elements.append(self._render_user_message(msg["content"]))
                 elif msg["role"] == "assistant":
@@ -177,27 +234,28 @@ class AgentPanel:
 
         # ── Streaming content ──
         if self.streaming_content:
-            elements.append(self._render_assistant_message(self.streaming_content, streaming=True))
+            elements.append(self._render_assistant_message(
+                self.streaming_content, streaming=True
+            ))
 
-        # ── Empty state ──
+        # ── Sparkle overlays ──
+        if self._sparkles.has_particles:
+            for s in self._sparkles.render_all():
+                elements.append(s)
+
+        # ── Welcome screen ──
         if not self.messages and not self.plans and not self.streaming_content:
-            elements.append(Text(""))
-            elements.append(Text(""))
-            elements.append(Text("  ◆ MYAGENT", "bold cyan"))
-            elements.append(Text("  AI Software Engineering Agent", "dim"))
-            elements.append(Text(""))
-            elements.append(Text("  What would you like to build?", "white"))
-            elements.append(Text(""))
-            elements.append(Text("  Try: 'Analyze this project' or 'Build a feature'", "italic dim"))
-            elements.append(Text("  Use /help to see available commands", "italic dim"))
+            elements.append(self._render_welcome())
 
         return Group(*elements)
 
+    # ── State renderer with animation ──
+
     def _state_renderable(self) -> Text:
-        # Use animated spinner for active states
         if self.agent_state in ("thinking", "planning", "reading", "editing",
                                  "running", "testing", "reviewing", "waiting_approval"):
             spinner = SPINNER[self._spinner_frame]
+            dots = _THINKING_DOTS[self._thinking_dot_frame]
             labels = {
                 "thinking": "Thinking", "planning": "Planning",
                 "reading": "Reading", "editing": "Editing",
@@ -205,76 +263,184 @@ class AgentPanel:
                 "reviewing": "Reviewing", "waiting_approval": "Waiting",
             }
             label = labels.get(self.agent_state, "Working")
+            pulse_style = pulsing_style(self._welcome_frame, "cyan", 0.08)
             return Text.assemble(
                 (f"{spinner} ", "bold cyan"),
-                (label, "cyan"),
+                (f"{label}{dots}", pulse_style),
             )
         else:
             state_styles = {
-                "ready": ("● Ready", "green"),
+                "ready":     ("● Ready", "green"),
                 "completed": ("✓ Completed", "green"),
-                "error": ("✗ Error", "red"),
+                "error":     ("✗ Error", "red"),
             }
             label, style = state_styles.get(self.agent_state, ("● Idle", "dim"))
             return Text(f"{label}", style=style)
 
+    # ── Message renderers ──
+
     def _render_user_message(self, content: str) -> Group:
-        """Render a user message compactly without borders."""
+        """Render a user message with a styled bubble."""
         display = content[:300] + ("..." if len(content) > 300 else "")
-        # Truncate to first few lines
         lines = display.split("\n")
         if len(lines) > 5:
             display = "\n".join(lines[:5]) + "\n..."
+
+        # Create a subtle user bubble
         return Group(
-            Text(f"  {H_LINE * 42}", "dim"),
+            Text(""),
             Text.assemble(
-                ("  You", "bold green"),
+                ("  ┌── ", "dim"),
+                ("You", "bold green"),
+                (" ──" + "─" * max(2, 30 - len(display[:40])), "dim"),
             ),
-            Text(f"  {display}", "white"),
+            Text(f"  │ {display}", "white"),
+            Text(f"  └{'─' * min(45, len(display[:50]) + 2)}", "dim"),
         )
 
     def _render_assistant_message(self, content: str, streaming: bool = False) -> Group:
-        """Render an assistant message without borders, with Markdown support."""
+        """Render assistant message with enhanced code blocks and streaming indicator."""
         display = content
-        # For non-streaming, truncate very long messages
         if not streaming and len(content) > 800:
             display = content[:800] + "\n\n... (truncated)"
 
-        title = "MyAgent" if not streaming else f"{SPINNER[self._spinner_frame]} MyAgent"
+        if streaming:
+            title = Text.assemble(
+                (f"{SPINNER[self._spinner_frame]} ", "bold cyan"),
+                ("MyAgent", "bold cyan"),
+            )
+        else:
+            title = Text.assemble(
+                ("◆ ", "bold cyan"),
+                ("MyAgent", "bold cyan"),
+            )
 
-        # Render as Markdown if it contains markdown-like syntax, else plain text
-        has_markdown = any(marker in content for marker in ("#", "```", "- ", "* ", "1. ", "**"))
-        body = Markdown(display) if has_markdown else Text(display)
+        # Check for code blocks - render with syntax highlighting
+        if "```" in content:
+            return Group(
+                Text(""),
+                title,
+                Text(""),
+                self._render_with_code_blocks(display, streaming),
+            )
+
+        # Simple content
+        has_markdown = any(marker in content for marker in ("#", "- ", "* ", "1. ", "**"))
+        if has_markdown:
+            body = Markdown(display)
+        else:
+            body = Text(display)
 
         return Group(
             Text(""),
-            Text.assemble(
-                ("  ", ""),
-                (f"{title}", "bold cyan"),
-            ),
+            title,
             Text(""),
-            body,
+            Text(f"  {display}", "white") if not has_markdown else body,
         )
 
+    def _render_with_code_blocks(self, content: str, streaming: bool) -> Group:
+        """Split content by code blocks and render each part appropriately."""
+        elements = []
+        parts = content.split("```")
+        
+        for i, part in enumerate(parts):
+            if i % 2 == 0:
+                # Plain text
+                if part.strip():
+                    if any(m in part for m in ("#", "- ", "* ", "1. ", "**")):
+                        elements.append(Markdown(part.strip()))
+                    else:
+                        elements.append(Text(f"  {part.strip()}"))
+            else:
+                # Code block
+                lines = part.split("\n")
+                lang = lines[0].strip() if lines else ""
+                code = "\n".join(lines[1:]) if len(lines) > 1 else part
+                if streaming or len(code) > 1000:
+                    # During streaming or large blocks, show as text to avoid re-parsing
+                    elements.append(Text(f"  ```{lang}"))
+                    for cl in code.split("\n"):
+                        elements.append(Text(f"  {cl}"))
+                    elements.append(Text("  ```"))
+                else:
+                    try:
+                        syntax = Syntax(code, lang or "python", theme="monokai", line_numbers=True)
+                        lang_badge = Text(f" [{lang}] ", style="bold dim")
+                        elements.append(lang_badge)
+                        elements.append(syntax)
+                    except Exception:
+                        elements.append(Text(f"  {code}"))
+
+        return Group(*elements)
+
+    # ── Welcome screen with animations ──
+
+    def _render_welcome(self) -> Group:
+        """Animated welcome screen with sparkle effects."""
+        elements = []
+        elements.append(Text(""))
+        elements.append(Text(""))
+
+        # Animated MYAGENT brand with gradient
+        schemes = ["cyberpunk", "neon", "ocean", "royal"]
+        scheme = schemes[(self._welcome_frame // 60) % len(schemes)]
+        brand = gradient_text("  ◆  M Y A G E N T  ◆  ", scheme, self._welcome_frame, bold=True)
+        elements.append(brand)
+
+        # Subtitle with pulsing effect
+        pulse_style = pulsing_style(self._welcome_frame, "cyan", 0.06)
+        elements.append(Text(f"  AI Software Engineering Agent", style=pulse_style))
+
+        elements.append(Text(""))
+
+        # Animated tagline with typewriter-like reveal
+        tag = "  What would you like to build today?"
+        reveal = min(len(tag), self._welcome_frame // 2)
+        if reveal > 0:
+            elements.append(Text(tag[:reveal], "white"))
+
+        elements.append(Text(""))
+
+        # Help hints with sparkle
+        hints = [
+            ("  ✦ ", "bold cyan"),
+            ("Try 'Analyze this project'", "italic dim"),
+            (" or ", "dim"),
+            ("'Build a feature'", "italic dim"),
+        ]
+        elements.append(Text.assemble(*hints))
+
+        elements.append(Text.assemble(
+            ("  ✦ ", "bold cyan"),
+            ("Use /help to see commands", "italic dim"),
+        ))
+
+        # Sparkle burst periodically on welcome
+        if self._welcome_frame % 30 == 0:
+            self._sparkles.add_burst(10, 0, 2)
+        for s in self._sparkles.render_all():
+            elements.append(Text(f"   {s}"))
+
+        return Group(*elements)
+
+    # ── Cursor ──
+
     def _tick_cursor(self):
-        """Toggle cursor visibility for blinking effect (called periodically)."""
         self._cursor_visible = not self._cursor_visible
 
     def _cursor_char(self) -> str:
-        """Return a cursor character (block or pipe depending on visibility)."""
         if not self._is_typing:
             return ""
-        return "\u2588" if self._cursor_visible else " "  # █ or space
+        return "█" if self._cursor_visible else " "
 
-    def render_composer(self) -> Group:
-        """Render the input composer area as a standalone renderable.
+    # ── Composer / Input area ──
+
+    def render_composer(self, turn_count: int = 0) -> Group:
+        """Render the input composer with thinking indicator or input box.
         
-        - When agent is thinking/working: shows an animated thinking indicator
-          with spinner, state label, and cancel hint.
-        - When agent is idle/ready: shows the interactive input box
-          with blinking cursor, multiline support, and active/inactive states.
+        Args:
+            turn_count: Current conversation turn number (0-based).
         """
-        # Check if agent is in an active working state
         active_states = {
             "thinking", "planning", "reading", "editing",
             "running", "testing", "reviewing", "waiting_approval",
@@ -284,51 +450,49 @@ class AgentPanel:
 
         is_compact = self._terminal_height < 15
         if is_compact:
-            return self._render_compact()
-        return self._render_full()
+            return self._render_compact(turn_count)
+        return self._render_full(turn_count)
 
     def _render_thinking(self) -> Group:
-        """Render an animated thinking indicator while agent is working.
-        
-        Shows a live spinner with the current state label, model info,
-        and a cancel hint. Adapts to compact mode on small terminals.
-        """
+        """Animated thinking indicator with pulsing progress visualization."""
         spinner = SPINNER[self._spinner_frame]
         is_compact = self._terminal_height < 15
         box_width = max(30, min(72, self._terminal_width - 8))
         content_width = box_width - 2
 
-        # State label (human-readable)
         state_labels = {
-            "thinking": "Thinking",
-            "planning": "Planning",
-            "reading": "Reading project",
-            "editing": "Editing files",
-            "running": "Working",
-            "testing": "Testing",
-            "reviewing": "Reviewing",
-            "waiting_approval": "Waiting for approval",
+            "thinking": "Thinking", "planning": "Planning",
+            "reading": "Reading project", "editing": "Editing files",
+            "running": "Working", "testing": "Testing",
+            "reviewing": "Reviewing", "waiting_approval": "Waiting for approval",
         }
         state_label = state_labels.get(self.agent_state, "Working")
 
-        # Animated sub-status messages that rotate during thinking
+        # Animated sub-status messages
         thinking_messages = [
-            "Processing your request...",
-            "Analyzing the codebase...",
-            "Generating solution...",
-            "Working on it...",
-            "Almost there...",
+            "Processing your request",
+            "Analyzing the codebase",
+            "Generating solution",
+            "Working on it",
+            "Almost there",
         ]
         msg_idx = self._spinner_frame % len(thinking_messages)
         status_msg = thinking_messages[msg_idx]
 
+        # Simulated progress bar that pulses
+        progress_pct = min(95, (self._spinner_frame * 7) % 100)
+        bar = AnimatedBar(8)
+        bar.tick()
+        bar_render = bar.render(progress_pct, pulse=True)
+
+        dots = _THINKING_DOTS[self._thinking_dot_frame]
+
         if is_compact:
-            # ── Compact thinking indicator (2 lines) ──
             return Group(
                 Text.assemble(
                     ("  ", ""),
                     (f"{spinner} ", "bold cyan"),
-                    (f"{state_label}...", "cyan"),
+                    (f"{state_label}{dots}", "cyan"),
                 ),
                 Text.assemble(
                     ("   ", ""),
@@ -339,40 +503,37 @@ class AgentPanel:
                 ),
             )
 
-        # ── Full thinking indicator with box ──
-        # Line 1 content: spinner + state_label + "..."
-        line1_text = f"{spinner} {state_label}..."
-        # Line 2 content: status message with 2-space indent
-        line2_text = f"  {status_msg}"
-        # Line 3 content: cancel hint
-        line3_text = "Press Ctrl+C to cancel"
+        # Full thinking indicator with animated bar
+        line1_text = f"{spinner}  {state_label}{dots}"
+        line2_text = f"  {status_msg}{dots}"
+        line3_left = "  "
+        line3_bar = bar_render
+        line3_right = ""
+        cancel_text = "Press Ctrl+C to cancel"
 
         lines = [
-            # Top border
             Text.assemble(
                 (f"  {H_TOP_L}", "dim"),
                 (f"{H_LINE * content_width}", "dim"),
                 (f"{H_TOP_R}", "dim"),
             ),
-            # Line 1: Spinner + state label
             Text.assemble(
                 (f"  {H_VLINE} ", "dim"),
                 (line1_text, "bold cyan"),
                 (f" {' ' * max(0, content_width - len(line1_text))} {H_VLINE}", "dim"),
             ),
-            # Line 2: Status message + model
             Text.assemble(
                 (f"  {H_VLINE} ", "dim"),
                 (line2_text, "dim"),
                 (f" {' ' * max(0, content_width - len(line2_text))} {H_VLINE}", "dim"),
             ),
-            # Line 3: Cancel hint
             Text.assemble(
                 (f"  {H_VLINE} ", "dim"),
-                (line3_text, "italic dim"),
-                (f" {' ' * max(0, content_width - len(line3_text))} {H_VLINE}", "dim"),
+                (bar_render, ""),
+                (f" {' ' * max(0, content_width - 8)}", "dim"),
+                (f" {cancel_text}", "italic dim"),
+                (f" {' ' * max(0, content_width - len(cancel_text) - 10)} {H_VLINE}", "dim"),
             ),
-            # Bottom border
             Text.assemble(
                 (f"  {H_BOT_L}", "dim"),
                 (f"{H_LINE * content_width}", "dim"),
@@ -380,15 +541,9 @@ class AgentPanel:
             ),
         ]
 
-        # Info line below
-        mode_color = {
-            "build": "cyan", "plan": "blue", "debug": "magenta",
-            "review": "yellow", "ask": "green",
-        }.get(self.mode, "white")
-        mode_tag = Text.assemble(
-            (f"[{self.get_mode_display()}]", f"bold {mode_color}"),
-        )
-        # Animated state indicator in status bar
+        # Info line
+        mode_color = _MODE_SCHEMES.get(self.mode, "white")
+        mode_tag = Text.assemble((f"[{self.get_mode_display()}]", f"bold {mode_color}"))
         status = Text.assemble(
             (f"{spinner} ", "bold cyan"),
             (f"{state_label.lower()}", "cyan"),
@@ -399,10 +554,7 @@ class AgentPanel:
         pad = max(4, box_width - 2 - len(left_info) - len(right_info))
 
         info_line = Text.assemble(
-            ("   ", ""),
-            mode_tag,
-            ("  ", ""),
-            status,
+            ("   ", ""), mode_tag, ("  ", ""), status,
             (" " * pad, ""),
             (f"{self.current_model}", "bold yellow"),
             ("  Ctrl+C", "dim"),
@@ -410,57 +562,58 @@ class AgentPanel:
 
         return Group(*lines, info_line)
 
-    def _render_compact(self) -> Group:
-        """Compact 2-line composer for short terminals."""
+    def _render_compact(self, turn_count: int = 0) -> Group:
+        """Compact input composer with turn context."""
         prompt = self.input_text if self.input_text else "Ask MyAgent..."
         cursor = self._cursor_char() if self._is_typing else ""
-        display = self.input_text + cursor if self.input_text else ""
+        display = (prompt + cursor) if self.input_text else prompt
+        dots = _THINKING_DOTS[self._thinking_dot_frame] if self._is_typing else ""
+        
+        # Show turn count if conversation is active
+        context_hint = f" #{turn_count}" if turn_count > 0 else ""
+        
         return Group(
             Text.assemble(
                 ("  ", ""),
                 ("▸ ", "bold cyan"),
-                (display if self.input_text else "Ask MyAgent...",
-                 "white" if self.input_text else "dim italic"),
+                (display, "white" if self.input_text else "dim italic"),
             ),
             Text.assemble(
                 ("   ", ""),
                 (f"[{self.get_mode_display()}]", "dim"),
+                (f"{context_hint}", "green"),
                 (f"  {self.current_model} ", "dim"),
-                (f"{'typing' if self._is_typing else 'ready'}", "green" if self._is_typing else "dim"),
+                (f"{'typing' + dots if self._is_typing else 'ready'}", "green" if self._is_typing else "dim"),
             ),
         )
 
-    def _render_full(self) -> Group:
-        """Full-size multi-line composer with box and cursor."""
+    def _render_full(self, turn_count: int = 0) -> Group:
+        """Full-size multi-line composer with box, animated cursor, and conversation context.
+        
+        Args:
+            turn_count: Current conversation turn number.
+        """
         box_width = max(30, min(72, self._terminal_width - 8))
-        content_width = box_width - 2  # Space between │ walls
+        content_width = box_width - 2
 
-        # ── Parse input lines ──
         input_lines = self.input_text.split("\n") if self.input_text else [""]
-
         cursor_row = self.input_cursor_row
         cursor_col = self.input_cursor_col
 
-        # ── Determine visible scroll window ──
         max_display_lines = 3
         total_lines = len(input_lines)
         if total_lines <= max_display_lines:
             start_line = 0
         else:
-            start_line = max(0, min(
-                cursor_row - 1,
-                total_lines - max_display_lines
-            ))
+            start_line = max(0, min(cursor_row - 1, total_lines - max_display_lines))
 
         visible_lines = input_lines[start_line:start_line + max_display_lines]
         while len(visible_lines) < max_display_lines:
             visible_lines.append("")
 
-        # ── Cursor ──
         cursor_ch = self._cursor_char()
         has_content = bool(self.input_text)
 
-        # ── Build box ──
         lines = [
             Text.assemble(
                 (f"  {H_TOP_L}", "dim"),
@@ -469,14 +622,12 @@ class AgentPanel:
             )
         ]
 
-        # Content lines
         for i, line in enumerate(visible_lines):
             abs_idx = start_line + i
             is_cursor_line = abs_idx == cursor_row
             display_line = line[:content_width]
 
             if not has_content and i == 0:
-                # Empty buffer - show the placeholder on first line
                 if is_cursor_line and cursor_ch:
                     lines.append(Text.assemble(
                         (f"  {H_VLINE} ", "dim"),
@@ -490,11 +641,9 @@ class AgentPanel:
                         ("Ask MyAgent to build, fix, debug, or explain...", "dim italic"),
                         (f" {' ' * max(0, content_width - 46)} {H_VLINE}", "dim"),
                     ))
-                # Remaining lines are blank
                 continue
 
             if is_cursor_line and cursor_ch:
-                # Show cursor within text
                 before = display_line[:cursor_col]
                 at_cursor = display_line[cursor_col:cursor_col + 1] if cursor_col < len(display_line) else " "
                 after = display_line[cursor_col + 1:] if cursor_col < len(display_line) else ""
@@ -514,49 +663,44 @@ class AgentPanel:
                     (f" {' ' * max(0, content_width - len(visible_text))} {H_VLINE}", "dim"),
                 ))
 
-        # Bottom border
         lines.append(Text.assemble(
             (f"  {H_BOT_L}", "dim"),
             (f"{H_LINE * content_width}", "dim"),
             (f"{H_BOT_R}", "dim"),
         ))
 
-        # Scroll indicator
         scroll_info = ""
         if total_lines > max_display_lines:
             scroll_info = f"{start_line + 1}-{min(start_line + max_display_lines, total_lines)}/{total_lines}"
 
-        # ── Info line below composer ──
-        mode_color = {
-            "build": "cyan", "plan": "blue", "debug": "magenta",
-            "review": "yellow", "ask": "green",
-        }.get(self.mode, "white")
-        mode_tag = Text.assemble(
-            (f"[{self.get_mode_display()}]", f"bold {mode_color}"),
-        )
+        # Conversation context indicator
+        turn_hint = f" Turn #{turn_count}" if turn_count > 0 else ""
+        
+        # Animated status indicator
+        typing_dots = _THINKING_DOTS[self._thinking_dot_frame] if self._is_typing else ""
+        mode_color = _MODE_SCHEMES.get(self.mode, "white")
+        
+        mode_tag = Text.assemble((f"[{self.get_mode_display()}]", f"bold {mode_color}"))
+        status_icon = "●" if self._is_typing else "○"
         status = Text.assemble(
-            ("● ", "green" if self._is_typing else "dim"),
-            ("typing" if self._is_typing else "ready", "green" if self._is_typing else "dim"),
+            (f"{status_icon} ", "green" if self._is_typing else "dim"),
+            (f"typing{typing_dots}" if self._is_typing else "ready", "green" if self._is_typing else "dim"),
         )
-
-        # Calculate padding for right-aligned model/kbd info
-        left_info = f" [{self.get_mode_display()}]  \u25cf {'typing' if self._is_typing else 'ready'}"
+        
+        left_info = f" [{self.get_mode_display()}]  {status_icon} {'typing' if self._is_typing else 'ready'}"
         if scroll_info:
             left_info += f"  {scroll_info}"
-        right_info = f"{self.current_model}  Enter \u00b7 Shift+Enter"
+        # Turn count is rendered as turn_hint, NOT counted in left_info for padding
+        right_info = f"{self.current_model}  Enter · Shift+Enter"
         pad = max(4, box_width - 2 - len(left_info) - len(right_info))
 
         info_line = Text.assemble(
-            ("   ", ""),
-            mode_tag,
-            ("  ", ""),
-            status,
+            ("   ", ""), mode_tag, ("  ", ""), status,
             (" " * pad, ""),
             (scroll_info + "  " if scroll_info else "", "dim"),
+            (f"{turn_hint}", "bold green"),
             (f"{self.current_model}", "bold yellow"),
-            ("  Enter", "dim"),
-            (" \u00b7 ", "dim"),
-            ("Shift+Enter", "dim"),
+            ("  Enter", "dim"), (" · ", "dim"), ("Shift+Enter", "dim"),
         )
 
         return Group(*lines, info_line)
